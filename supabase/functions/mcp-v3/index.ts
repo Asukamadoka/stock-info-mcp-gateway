@@ -15,6 +15,16 @@ import {
   computeIntradaySignals,
   type IntradayBar,
 } from "./lib/market-signals.ts";
+import {
+  computeFundFlowConsensus,
+} from "./lib/fund-flow.ts";
+import {
+  computeCandidateScore,
+} from "./lib/candidate-score.ts";
+import {
+  buildFlowObservations,
+  technicalScoreFromIntraday,
+} from "./lib/decision-adapters.ts";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare:false, max:1 });
 const VERSION = "3.0.0-staging";
@@ -491,6 +501,279 @@ async function intradaySignals(a:any){
   });
 }
 
+async function decisionContext(a:any){
+  const intradayWrapped=
+    await intradaySignals(a);
+
+  const intraday=
+    intradayWrapped
+      ?.structuredContent
+      ?.data;
+
+  if(
+    !intraday?.signals
+  ){
+    throw new Error(
+      "intraday signals unavailable"
+    );
+  }
+
+  const symbol=
+    normCode(
+      a.code,
+      a.market,
+    );
+
+  let l2:any=null;
+
+  if(
+    !symbol.startsWith("bj")
+  ){
+    const market=
+      symbol.startsWith("sh")
+        ?"SH"
+        :"SZ";
+
+    l2=
+      await getLevel2OrderBook({
+        code:
+          symbol.slice(2),
+
+        market,
+
+        tokenLoader:
+          ()=>secret(
+            "itick_api_token"
+          ),
+
+        depthFetcher:
+          ({
+            token,
+            code,
+            market,
+          })=>
+            fetchItickDepth({
+              token,
+              code,
+              region:market,
+            }),
+      });
+  }
+
+  const observations=
+    buildFlowObservations({
+      signals:
+        intraday.signals,
+
+      tencent:{
+        confidence:
+          Number(
+            intraday.confidence||
+            0
+          ),
+
+        stale:
+          intraday.stale ??
+          null,
+      },
+
+      l2,
+    });
+
+  const flow=
+    computeFundFlowConsensus(
+      observations,
+    );
+
+  return {
+    intraday,
+    l2,
+    observations,
+    flow,
+  };
+}
+
+async function fundFlowConsensus(
+  a:any,
+){
+  const ctx=
+    await decisionContext(a);
+
+  return wrap({
+    source:
+      "multi-source-flow-consensus",
+
+    source_families:
+      ctx.flow
+        .used_observations
+        .map(
+          (x:any)=>
+            x.sourceFamily
+        ),
+
+    fetched_at:
+      new Date()
+        .toISOString(),
+
+    data_kind:
+      "derived",
+
+    observations:
+      ctx.observations,
+
+    l2_status:
+      ctx.l2?.status ??
+      "unavailable",
+
+    consensus:
+      ctx.flow,
+
+    note:
+      "Tencent tail price-volume is an estimate; iTick visible order-book depth is optional. Unknown or unavailable Level-2 is not fabricated.",
+  });
+}
+
+function boundedScore(
+  value:any,
+  name:string,
+){
+  const n=
+    Number(value);
+
+  if(
+    !Number.isFinite(n) ||
+    n<0 ||
+    n>100
+  ){
+    throw new Error(
+      `${name} must be between 0 and 100`
+    );
+  }
+
+  return n;
+}
+
+async function candidateScore(
+  a:any,
+){
+  const ctx=
+    await decisionContext(a);
+
+  const technical=
+    technicalScoreFromIntraday(
+      ctx.intraday.signals,
+    );
+
+  const candidate=
+    computeCandidateScore({
+      sectorCatalyst:
+        boundedScore(
+          a.sector_catalyst_score,
+          "sector_catalyst_score",
+        ),
+
+      earningsValuation:
+        boundedScore(
+          a.earnings_valuation_score,
+          "earnings_valuation_score",
+        ),
+
+      technical:
+        technical.score,
+
+      flowChips:
+        ctx.flow
+          .score_0_to_100,
+
+      payoffTriggers:
+        boundedScore(
+          a.payoff_triggers_score,
+          "payoff_triggers_score",
+        ),
+
+      critical1430Available:
+        technical
+          .critical1430Available,
+
+      flowChipDataAvailable:
+        ctx.flow
+          .signal_1_to_1 !==
+        null,
+
+      vetoes:{
+        unjustifiedValuation:
+          a.unjustified_valuation===
+          true,
+
+        relativeWeaknessDespiteCatalyst:
+          a.relative_weakness_despite_catalyst===
+          true,
+
+        sustainedLargeFundWithdrawal:
+          a.sustained_large_fund_withdrawal===
+          true,
+
+        cashFlowProfitDivergence:
+          a.cash_flow_profit_divergence===
+          true,
+
+        majorFundamentalRisk:
+          a.major_fundamental_risk===
+          true,
+      },
+    });
+
+  return wrap({
+    source:
+      "candidate-score-v1",
+
+    fetched_at:
+      new Date()
+        .toISOString(),
+
+    data_kind:
+      "derived",
+
+    candidate,
+
+    auto_inputs:{
+      technical,
+
+      fund_flow:
+        ctx.flow,
+
+      l2_status:
+        ctx.l2?.status ??
+        "unavailable",
+
+      intraday_source_timestamp:
+        ctx.intraday
+          .source_timestamp,
+
+      intraday_stale:
+        ctx.intraday.stale,
+
+      intraday_confidence:
+        ctx.intraday
+          .confidence,
+    },
+
+    analyst_inputs:{
+      sector_catalyst_score:
+        a.sector_catalyst_score,
+
+      earnings_valuation_score:
+        a.earnings_valuation_score,
+
+      payoff_triggers_score:
+        a.payoff_triggers_score,
+    },
+
+    note:
+      "Candidate score combines explicit analyst/research scores with automatically derived intraday technical and multi-source flow signals. Hard vetoes override the numeric result.",
+  });
+}
+
 const LOCAL=[
 {name:"source_status",description:"Gateway source/auth/deployment status",inputSchema:{type:"object",additionalProperties:false}},
 {name:"a_quote_tencent",description:"Tencent A-share realtime quote",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
@@ -499,6 +782,8 @@ const LOCAL=[
 {name:"a_quote_resilient",description:"A-share realtime quote with Tencent primary and HiThink fallback. Returns source, freshness, confidence and provider-attempt metadata.",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
 {name:"l2_orderbook",description:"A-share SH/SZ multi-level order book via optional iTick Level-2 provider. Returns visible depth, imbalance, spread and microprice. Missing/expired/quota-limited credentials are reported explicitly and are never replaced by fake Level-2 data.",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz"]}},required:["code"],additionalProperties:false}},
 {name:"a_intraday_signals",description:"A-share 5-minute intraday signal snapshot: estimated bar VWAP, VWAP state, 15m/30m relative strength, and 14:00/14:30 tail-session metrics. Benchmark defaults to CSI 300 (SH 000300) and can be overridden.",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]},benchmark_code:{type:"string"},benchmark_market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
+{name:"fund_flow_consensus",description:"Multi-source A-share flow consensus. Combines Tencent late-session price-volume proxy with optional iTick visible Level-2 order-book depth, deduplicates source families and exposes conflicts/confidence.",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]},benchmark_code:{type:"string"},benchmark_market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
+{name:"candidate_score",description:"Transparent short-term candidate score using fixed 25/25/20/20/10 weights. Technical and flow components are auto-derived; sector/catalyst, earnings/valuation and payoff/trigger scores are supplied by research. Missing critical data caps grade at B+ and hard vetoes make the candidate ineligible.",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]},benchmark_code:{type:"string"},benchmark_market:{type:"string",enum:["sh","sz","bj"]},sector_catalyst_score:{type:"number",minimum:0,maximum:100},earnings_valuation_score:{type:"number",minimum:0,maximum:100},payoff_triggers_score:{type:"number",minimum:0,maximum:100},unjustified_valuation:{type:"boolean"},relative_weakness_despite_catalyst:{type:"boolean"},sustained_large_fund_withdrawal:{type:"boolean"},cash_flow_profit_divergence:{type:"boolean"},major_fundamental_risk:{type:"boolean"}},required:["code","sector_catalyst_score","earnings_valuation_score","payoff_triggers_score"],additionalProperties:false}},
 {name:"tushare_list_tools",description:"List all TuShare MCP tools without lossy name normalization",inputSchema:{type:"object",additionalProperties:false}},
 {name:"tushare_call",description:"Call any TuShare MCP tool by its original tool name",inputSchema:{type:"object",properties:{tool_name:{type:"string"},arguments:{type:"object"}},required:["tool_name"],additionalProperties:false}},
 {name:"a_stock_data_capabilities",description:"Inspect integrated simonlin1212/a-stock-data full-skill capability catalog",inputSchema:{type:"object",additionalProperties:false}}
@@ -527,7 +812,7 @@ Deno.serve(async(req:Request)=>{
   }
   if(m==="tools/call"){
     const n=String(p?.name||""),a=p?.arguments||{};
-    if(n==="source_status")return jres(id,await sourceStatus()); if(n==="a_quote_tencent")return jres(id,await tencentQuote(a)); if(n==="a_kline_tencent")return jres(id,await tencentKline(a)); if(n==="a_quote_consensus")return jres(id,await quoteConsensus(a)); if(n==="a_quote_resilient")return jres(id,await quoteResilient(a)); if(n==="l2_orderbook")return jres(id,await l2OrderBook(a)); if(n==="a_intraday_signals")return jres(id,await intradaySignals(a)); if(n==="tushare_list_tools")return jres(id,wrap(await tushareTools())); if(n==="tushare_call")return jres(id,await callUpstream(tushare,"tools/call",{name:a.tool_name,arguments:a.arguments||{}})); if(n==="a_stock_data_capabilities")return jres(id,await aStockCatalog());
+    if(n==="source_status")return jres(id,await sourceStatus()); if(n==="a_quote_tencent")return jres(id,await tencentQuote(a)); if(n==="a_kline_tencent")return jres(id,await tencentKline(a)); if(n==="a_quote_consensus")return jres(id,await quoteConsensus(a)); if(n==="a_quote_resilient")return jres(id,await quoteResilient(a)); if(n==="l2_orderbook")return jres(id,await l2OrderBook(a)); if(n==="a_intraday_signals")return jres(id,await intradaySignals(a)); if(n==="fund_flow_consensus")return jres(id,await fundFlowConsensus(a)); if(n==="candidate_score")return jres(id,await candidateScore(a)); if(n==="tushare_list_tools")return jres(id,wrap(await tushareTools())); if(n==="tushare_call")return jres(id,await callUpstream(tushare,"tools/call",{name:a.tool_name,arguments:a.arguments||{}})); if(n==="a_stock_data_capabilities")return jres(id,await aStockCatalog());
     const hi=await findHi(n); if(hi)return jres(id,await callUpstream(hi.up,"tools/call",{name:hi.name,arguments:a}));
     return jres(id,await callUpstream(jin10,"tools/call",p));
   }

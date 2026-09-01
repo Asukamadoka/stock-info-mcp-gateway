@@ -1,5 +1,9 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import postgres from "npm:postgres@3.4.7";
+import {
+  parseCnQuoteTimestamp,
+  runFallback,
+} from "./lib/source-result.ts";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare:false, max:1 });
 const VERSION = "3.0.0-staging";
@@ -43,7 +47,60 @@ const tushare:Upstream={id:"tushare",protocol:"2025-11-25",url:async()=>`https:/
 const HI=[hiA,hiI,hiF,hiM];
 
 function normCode(code:string,market?:string){let s=String(code).trim().toLowerCase();if(/^sh\d{6}$/.test(s)||/^sz\d{6}$/.test(s)||/^bj\d{6}$/.test(s))return s;if(/^\d{6}\.(sh|sz|bj)$/.test(s)){const [c,m]=s.split(".");return m+c}if(!/^\d{6}$/.test(s))throw new Error("code must be six digits or exchange-qualified");if(market)return market+s;if(/^(5|6|68)/.test(s))return"sh"+s;if(/^(0|1|2|3)/.test(s))return"sz"+s;if(/^(4|8|92)/.test(s))return"bj"+s;throw new Error("cannot infer market")}
-async function tencentQuote(a:any){const symbol=normCode(a.code,a.market);const r=await fetch(`https://qt.gtimg.cn/q=${symbol}`,{headers:{Referer:"https://gu.qq.com/","User-Agent":"Mozilla/5.0"}});const txt=new TextDecoder("gbk").decode(await r.arrayBuffer());const m=txt.match(/="([\s\S]*?)"/);if(!m)throw new Error("bad Tencent quote payload");const f=m[1].split("~");const data={source:"tencent",symbol,code:f[2]||symbol.slice(2),name:f[1]||null,price:f[3]||null,prev_close:f[4]||null,open:f[5]||null,volume:f[6]||null,bid:f[9]||null,ask:f[19]||null,time:f[30]||null,change:f[31]||null,change_percent:f[32]||null,high:f[33]||null,low:f[34]||null,turnover_amount:f[37]||null,turnover_rate:f[38]||null,pe_ttm:f[39]||null};return wrap(data)}
+async function tencentQuoteData(a:any){
+  const symbol=normCode(a.code,a.market);
+
+  const r=await fetch(
+    `https://qt.gtimg.cn/q=${symbol}`,
+    {
+      headers:{
+        Referer:"https://gu.qq.com/",
+        "User-Agent":"Mozilla/5.0"
+      }
+    }
+  );
+
+  if(!r.ok) throw new Error(`Tencent HTTP ${r.status}`);
+
+  const txt=new TextDecoder("gbk").decode(await r.arrayBuffer());
+  const m=txt.match(/="([\\s\\S]*?)"/);
+
+  if(!m) throw new Error("bad Tencent quote payload");
+
+  const f=m[1].split("~");
+
+  return {
+    source:"tencent",
+    symbol,
+    code:f[2]||symbol.slice(2),
+    name:f[1]||null,
+
+    price:f[3]||null,
+    prev_close:f[4]||null,
+    open:f[5]||null,
+    volume:f[6]||null,
+
+    bid:f[9]||null,
+    ask:f[19]||null,
+
+    time:f[30]||null,
+
+    change:f[31]||null,
+    change_percent:f[32]||null,
+
+    high:f[33]||null,
+    low:f[34]||null,
+
+    turnover_amount:f[37]||null,
+    turnover_rate:f[38]||null,
+    pe_ttm:f[39]||null
+  };
+}
+
+async function tencentQuote(a:any){
+  return wrap(await tencentQuoteData(a));
+}
+
 async function tencentKline(a:any){const symbol=normCode(a.code,a.market),period=String(a.period||"m5"),count=Math.max(1,Math.min(Number(a.count||100),320));if(!["m1","m5","m15","m30","m60"].includes(period))throw new Error("bad period");const r=await fetch(`https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=${symbol},${period},,${count}`,{headers:{Referer:"https://gu.qq.com/","User-Agent":"Mozilla/5.0"}});const j=await r.json();const rows=j?.data?.[symbol]?.[period];if(!Array.isArray(rows))throw new Error("missing Tencent kline rows");const klines=rows.map((x:any[])=>({time:x?.[0]??null,open:x?.[1]??null,close:x?.[2]??null,high:x?.[3]??null,low:x?.[4]??null,volume_lots:x?.[5]??null,turnover_basis_points:x?.[7]??null,estimated_amount:x?.[5]&&x?.[1]&&x?.[2]?Number(x[5])*100*((Number(x[1])+Number(x[2]))/2):null}));return wrap({source:"tencent",symbol,period,count:klines.length,klines,note:"estimated_amount is estimated; field[7] is turnover basis points"})}
 function wrap(data:any){return{content:[{type:"text",text:JSON.stringify(data)}],structuredContent:{data,status:200,message:""}}}
 
@@ -82,11 +139,67 @@ async function sourceStatus(){
 }
 async function quoteConsensus(a:any){const tq=await tencentQuote(a);const code=normCode(a.code,a.market);const thscode=`${code.slice(2)}.${code.startsWith("sh")?"SH":code.startsWith("sz")?"SZ":"BJ"}`;let hi:any=null,hiErr:any=null;try{hi=await callUpstream(hiA,"tools/call",{name:"get_a_share_prices_snapshot",arguments:{thscodes:thscode}})}catch(e){hiErr=String(e)}return wrap({ticker:thscode,tencent:tq.structuredContent.data,hithink:hi?.structuredContent??hi?.content??hi,error:hiErr,validation:"Compare timestamps and price fields; do not average discrepant sources blindly."})}
 
+async function quoteResilient(a:any){
+  const code=normCode(a.code,a.market);
+
+  const thscode=
+    `${code.slice(2)}.${code.startsWith("sh")?"SH":code.startsWith("sz")?"SZ":"BJ"}`;
+
+  const fetchedAt=new Date().toISOString();
+
+  const result=await runFallback<any>([
+    {
+      source:"tencent-quote",
+      sourceFamily:"tencent",
+      confidence:0.95,
+      maxAgeMs:120_000,
+
+      fetch:async()=>{
+        const data=await tencentQuoteData(a);
+
+        return {
+          data,
+          sourceTimestamp:parseCnQuoteTimestamp(data.time)
+        };
+      }
+    },
+
+    {
+      source:"hithink-a-share",
+      sourceFamily:"hithink",
+      confidence:0.90,
+      maxAgeMs:120_000,
+
+      fetch:async()=>{
+        const hi=await callUpstream(
+          hiA,
+          "tools/call",
+          {
+            name:"get_a_share_prices_snapshot",
+            arguments:{thscodes:thscode}
+          }
+        );
+
+        return {
+          data:
+            hi?.structuredContent ??
+            hi?.content ??
+            hi,
+          sourceTimestamp:null
+        };
+      }
+    }
+  ],fetchedAt);
+
+  return wrap(result);
+}
+
 const LOCAL=[
 {name:"source_status",description:"Gateway source/auth/deployment status",inputSchema:{type:"object",additionalProperties:false}},
 {name:"a_quote_tencent",description:"Tencent A-share realtime quote",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
 {name:"a_kline_tencent",description:"Tencent m1/m5/m15/m30/m60 K-line",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]},period:{type:"string",enum:["m1","m5","m15","m30","m60"]},count:{type:"integer",minimum:1,maximum:320}},required:["code"],additionalProperties:false}},
 {name:"a_quote_consensus",description:"Cross-check Tencent realtime quote against HiThink official structured snapshot",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
+{name:"a_quote_resilient",description:"A-share realtime quote with Tencent primary and HiThink fallback. Returns source, freshness, confidence and provider-attempt metadata.",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
 {name:"tushare_list_tools",description:"List all TuShare MCP tools without lossy name normalization",inputSchema:{type:"object",additionalProperties:false}},
 {name:"tushare_call",description:"Call any TuShare MCP tool by its original tool name",inputSchema:{type:"object",properties:{tool_name:{type:"string"},arguments:{type:"object"}},required:["tool_name"],additionalProperties:false}},
 {name:"a_stock_data_capabilities",description:"Inspect integrated simonlin1212/a-stock-data full-skill capability catalog",inputSchema:{type:"object",additionalProperties:false}}
@@ -115,7 +228,7 @@ Deno.serve(async(req:Request)=>{
   }
   if(m==="tools/call"){
     const n=String(p?.name||""),a=p?.arguments||{};
-    if(n==="source_status")return jres(id,await sourceStatus()); if(n==="a_quote_tencent")return jres(id,await tencentQuote(a)); if(n==="a_kline_tencent")return jres(id,await tencentKline(a)); if(n==="a_quote_consensus")return jres(id,await quoteConsensus(a)); if(n==="tushare_list_tools")return jres(id,wrap(await tushareTools())); if(n==="tushare_call")return jres(id,await callUpstream(tushare,"tools/call",{name:a.tool_name,arguments:a.arguments||{}})); if(n==="a_stock_data_capabilities")return jres(id,await aStockCatalog());
+    if(n==="source_status")return jres(id,await sourceStatus()); if(n==="a_quote_tencent")return jres(id,await tencentQuote(a)); if(n==="a_kline_tencent")return jres(id,await tencentKline(a)); if(n==="a_quote_consensus")return jres(id,await quoteConsensus(a)); if(n==="a_quote_resilient")return jres(id,await quoteResilient(a)); if(n==="tushare_list_tools")return jres(id,wrap(await tushareTools())); if(n==="tushare_call")return jres(id,await callUpstream(tushare,"tools/call",{name:a.tool_name,arguments:a.arguments||{}})); if(n==="a_stock_data_capabilities")return jres(id,await aStockCatalog());
     const hi=await findHi(n); if(hi)return jres(id,await callUpstream(hi.up,"tools/call",{name:hi.name,arguments:a}));
     return jres(id,await callUpstream(jin10,"tools/call",p));
   }

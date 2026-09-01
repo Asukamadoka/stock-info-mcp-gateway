@@ -54,6 +54,21 @@ for fn in "${FUNCTIONS[@]}"; do
 done
 
 echo
+echo "== Mark reverse-synced ESZip runtime snapshots =="
+for fn in "${FUNCTIONS[@]}"; do
+  FILE="supabase/functions/${fn}/index.ts"
+
+  if ! grep -q "reverse-synced ESZip runtime snapshot" "${FILE}"; then
+    TMP="$(mktemp)"
+    {
+      echo '// @ts-nocheck -- reverse-synced ESZip runtime snapshot; canonical typed source will replace this snapshot after v0.1 bootstrap.'
+      cat "${FILE}"
+    } > "${TMP}"
+    mv "${TMP}" "${FILE}"
+  fi
+done
+
+echo
 echo "== Restore deno.json files (Supabase download does not restore them) =="
 for fn in "${FUNCTIONS[@]}"; do
   cat > "supabase/functions/${fn}/deno.json" <<'JSON'
@@ -190,7 +205,7 @@ fi
 deno --version
 
 echo
-echo "== Type-check downloaded production source =="
+echo "== Module/parse-check downloaded production snapshots =="
 for fn in "${FUNCTIONS[@]}"; do
   echo "-- deno check ${fn}"
   deno check "supabase/functions/${fn}/index.ts"

@@ -5,9 +5,14 @@
 Codespaces is the full mobile/browser development environment for this project.
 
 The production bootstrap uses the Supabase CLI to download the exact currently
-deployed Edge Function source into the repository, then Deno type-checks it.
+deployed Edge Function runtime snapshot into the repository.
 
-## Compile check
+Because Supabase's ESZip reverse-sync may remove original TypeScript annotations,
+the initial snapshots are marked with `@ts-nocheck`. Deno is therefore used here
+to validate syntax, imports, dependencies, and the module graph rather than to
+claim full canonical TypeScript type safety.
+
+## Runtime snapshot validation
 
 ```bash
 deno check supabase/functions/mcp/index.ts

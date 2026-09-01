@@ -27,7 +27,7 @@ import {
 } from "./lib/decision-adapters.ts";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare:false, max:1 });
-const VERSION = "3.0.0-staging";
+const VERSION = "3.1.0";
 const CLIENT_PROTOCOL = "2025-11-25";
 
 type Upstream = { id:string; url:()=>Promise<string>; headers:()=>Promise<Record<string,string>>; protocol:string; prefix?:string };
@@ -791,7 +791,7 @@ const LOCAL=[
 
 async function clientAuth(req:Request){const a=req.headers.get("authorization")||"";return a===`Bearer ${await secret("jin10_bearer_token")}`}
 Deno.serve(async(req:Request)=>{
- if(req.method==="GET")return new Response(JSON.stringify({name:"stock-info-mcp-gateway",version:VERSION,status:"staging",production_untouched:true}),{headers:{"content-type":"application/json"}});
+ if(req.method==="GET")return new Response(JSON.stringify({name:"stock-info-mcp-gateway",version:VERSION,status:"ready",source_of_truth:"github"}),{headers:{"content-type":"application/json"}});
  if(req.method!=="POST")return new Response("Method Not Allowed",{status:405});
  try{
   if(!(await clientAuth(req)))return jerr(null,-32001,"Unauthorized",undefined,401);

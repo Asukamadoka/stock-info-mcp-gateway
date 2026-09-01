@@ -130,3 +130,17 @@ Deno.test("fallback prefers fresh result over earlier stale result", async () =>
 
   assertEquals(result.selected?.source, "fresh-backup");
 });
+
+Deno.test("parseCnBarTimestamp converts Tencent minute-bar timestamp", async () => {
+  const { parseCnBarTimestamp } = await import("./source-result.ts");
+
+  assertEquals(
+    parseCnBarTimestamp("202609021445"),
+    "2026-09-02T14:45:00+08:00",
+  );
+
+  assertEquals(
+    parseCnBarTimestamp("bad"),
+    null,
+  );
+});

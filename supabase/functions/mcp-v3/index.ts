@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import postgres from "npm:postgres@3.4.7";
 import {
+  parseCnBarTimestamp,
   parseCnQuoteTimestamp,
   runFallback,
 } from "./lib/source-result.ts";
@@ -10,6 +11,10 @@ import {
 import {
   getLevel2OrderBook,
 } from "./lib/level2-service.ts";
+import {
+  computeIntradaySignals,
+  type IntradayBar,
+} from "./lib/market-signals.ts";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare:false, max:1 });
 const VERSION = "3.0.0-staging";
@@ -259,6 +264,233 @@ async function l2OrderBook(a:any){
   return wrap(result);
 }
 
+function numericBarValue(
+  value:any,
+):number|null{
+  const n=Number(value);
+  return Number.isFinite(n)?n:null;
+}
+
+async function tencentM5Bars(
+  code:string,
+  market?:string,
+):Promise<{
+  symbol:string;
+  bars:IntradayBar[];
+  sourceTimestamp:string|null;
+}>{
+  const result=
+    await tencentKline({
+      code,
+      market,
+      period:"m5",
+      count:80,
+    });
+
+  const data=
+    result?.structuredContent?.data;
+
+  const rows=
+    Array.isArray(data?.klines)
+      ?data.klines
+      :[];
+
+  const bars:IntradayBar[]=[];
+
+  for(const row of rows){
+    const open=
+      numericBarValue(row?.open);
+
+    const high=
+      numericBarValue(row?.high);
+
+    const low=
+      numericBarValue(row?.low);
+
+    const close=
+      numericBarValue(row?.close);
+
+    const volume=
+      numericBarValue(
+        row?.volume_lots,
+      );
+
+    const time=
+      String(row?.time||"");
+
+    if(
+      open===null ||
+      high===null ||
+      low===null ||
+      close===null ||
+      volume===null ||
+      !time
+    ){
+      continue;
+    }
+
+    bars.push({
+      time,
+      open,
+      high,
+      low,
+      close,
+      volume,
+    });
+  }
+
+  const last=
+    bars.length
+      ?bars[bars.length-1]
+      :null;
+
+  return {
+    symbol:
+      String(
+        data?.symbol||
+        normCode(code,market)
+      ),
+
+    bars,
+
+    sourceTimestamp:
+      last
+        ?parseCnBarTimestamp(
+          last.time
+        )
+        :null,
+  };
+}
+
+async function intradaySignals(a:any){
+  const targetCode=
+    String(a?.code||"");
+
+  const targetMarket=
+    a?.market
+      ?String(a.market)
+      :undefined;
+
+  const benchmarkCode=
+    String(
+      a?.benchmark_code||
+      "000300"
+    );
+
+  const benchmarkMarket=
+    String(
+      a?.benchmark_market||
+      "sh"
+    );
+
+  const fetchedAt=
+    new Date().toISOString();
+
+  const [
+    target,
+    benchmark,
+  ]=await Promise.all([
+    tencentM5Bars(
+      targetCode,
+      targetMarket,
+    ),
+
+    tencentM5Bars(
+      benchmarkCode,
+      benchmarkMarket,
+    ),
+  ]);
+
+  const signals=
+    computeIntradaySignals(
+      target.bars,
+      benchmark.bars,
+    );
+
+  const timestamps=[
+    target.sourceTimestamp,
+    benchmark.sourceTimestamp,
+  ].filter(
+    (x):x is string=>!!x,
+  );
+
+  const sourceTimestamp=
+    timestamps.length
+      ?timestamps.sort()[0]
+      :null;
+
+  let stale:boolean|null=null;
+
+  if(sourceTimestamp){
+    const sourceMs=
+      Date.parse(
+        sourceTimestamp
+      );
+
+    const fetchedMs=
+      Date.parse(
+        fetchedAt
+      );
+
+    if(
+      Number.isFinite(sourceMs) &&
+      Number.isFinite(fetchedMs)
+    ){
+      stale=
+        fetchedMs-sourceMs >
+        10*60*1000;
+    }
+  }
+
+  let confidence=
+    sourceTimestamp
+      ?0.90
+      :0.70;
+
+  if(stale===true){
+    confidence=
+      Math.min(
+        confidence,
+        0.55,
+      );
+  }
+
+  return wrap({
+    source:"tencent-m5",
+    source_family:"tencent",
+
+    source_timestamp:
+      sourceTimestamp,
+
+    fetched_at:
+      fetchedAt,
+
+    stale,
+    confidence,
+
+    data_kind:"derived",
+
+    target:{
+      symbol:target.symbol,
+      bar_count:
+        target.bars.length,
+    },
+
+    benchmark:{
+      symbol:
+        benchmark.symbol,
+
+      bar_count:
+        benchmark.bars.length,
+    },
+
+    signals,
+
+    note:
+      "VWAP is a 5-minute bar estimate; 15m/30m RS uses matched 5-minute windows. Benchmark defaults to SH 000300 unless explicitly overridden.",
+  });
+}
+
 const LOCAL=[
 {name:"source_status",description:"Gateway source/auth/deployment status",inputSchema:{type:"object",additionalProperties:false}},
 {name:"a_quote_tencent",description:"Tencent A-share realtime quote",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
@@ -266,6 +498,7 @@ const LOCAL=[
 {name:"a_quote_consensus",description:"Cross-check Tencent realtime quote against HiThink official structured snapshot",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
 {name:"a_quote_resilient",description:"A-share realtime quote with Tencent primary and HiThink fallback. Returns source, freshness, confidence and provider-attempt metadata.",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
 {name:"l2_orderbook",description:"A-share SH/SZ multi-level order book via optional iTick Level-2 provider. Returns visible depth, imbalance, spread and microprice. Missing/expired/quota-limited credentials are reported explicitly and are never replaced by fake Level-2 data.",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz"]}},required:["code"],additionalProperties:false}},
+{name:"a_intraday_signals",description:"A-share 5-minute intraday signal snapshot: estimated bar VWAP, VWAP state, 15m/30m relative strength, and 14:00/14:30 tail-session metrics. Benchmark defaults to CSI 300 (SH 000300) and can be overridden.",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]},benchmark_code:{type:"string"},benchmark_market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
 {name:"tushare_list_tools",description:"List all TuShare MCP tools without lossy name normalization",inputSchema:{type:"object",additionalProperties:false}},
 {name:"tushare_call",description:"Call any TuShare MCP tool by its original tool name",inputSchema:{type:"object",properties:{tool_name:{type:"string"},arguments:{type:"object"}},required:["tool_name"],additionalProperties:false}},
 {name:"a_stock_data_capabilities",description:"Inspect integrated simonlin1212/a-stock-data full-skill capability catalog",inputSchema:{type:"object",additionalProperties:false}}
@@ -294,7 +527,7 @@ Deno.serve(async(req:Request)=>{
   }
   if(m==="tools/call"){
     const n=String(p?.name||""),a=p?.arguments||{};
-    if(n==="source_status")return jres(id,await sourceStatus()); if(n==="a_quote_tencent")return jres(id,await tencentQuote(a)); if(n==="a_kline_tencent")return jres(id,await tencentKline(a)); if(n==="a_quote_consensus")return jres(id,await quoteConsensus(a)); if(n==="a_quote_resilient")return jres(id,await quoteResilient(a)); if(n==="l2_orderbook")return jres(id,await l2OrderBook(a)); if(n==="tushare_list_tools")return jres(id,wrap(await tushareTools())); if(n==="tushare_call")return jres(id,await callUpstream(tushare,"tools/call",{name:a.tool_name,arguments:a.arguments||{}})); if(n==="a_stock_data_capabilities")return jres(id,await aStockCatalog());
+    if(n==="source_status")return jres(id,await sourceStatus()); if(n==="a_quote_tencent")return jres(id,await tencentQuote(a)); if(n==="a_kline_tencent")return jres(id,await tencentKline(a)); if(n==="a_quote_consensus")return jres(id,await quoteConsensus(a)); if(n==="a_quote_resilient")return jres(id,await quoteResilient(a)); if(n==="l2_orderbook")return jres(id,await l2OrderBook(a)); if(n==="a_intraday_signals")return jres(id,await intradaySignals(a)); if(n==="tushare_list_tools")return jres(id,wrap(await tushareTools())); if(n==="tushare_call")return jres(id,await callUpstream(tushare,"tools/call",{name:a.tool_name,arguments:a.arguments||{}})); if(n==="a_stock_data_capabilities")return jres(id,await aStockCatalog());
     const hi=await findHi(n); if(hi)return jres(id,await callUpstream(hi.up,"tools/call",{name:hi.name,arguments:a}));
     return jres(id,await callUpstream(jin10,"tools/call",p));
   }

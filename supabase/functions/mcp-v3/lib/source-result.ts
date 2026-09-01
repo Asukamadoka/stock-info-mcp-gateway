@@ -53,6 +53,21 @@ export function parseCnQuoteTimestamp(
   );
 }
 
+export function parseCnBarTimestamp(
+  value: string | null | undefined,
+): string | null {
+  if (!value) return null;
+
+  const s = String(value).trim();
+
+  if (!/^\d{12}$/.test(s)) return null;
+
+  return (
+    `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}` +
+    `T${s.slice(8, 10)}:${s.slice(10, 12)}:00+08:00`
+  );
+}
+
 function clampConfidence(value: number): number {
   return Math.max(0, Math.min(1, value));
 }

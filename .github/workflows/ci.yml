@@ -1,0 +1,50 @@
+name: Edge Function Snapshot Validation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot-validation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Verify reverse-sync markers
+        run: |
+          set -e
+          for fn in mcp mcp-v3 mcp-options mcp-htsc; do
+            grep -q "reverse-synced ESZip runtime snapshot" \
+              "supabase/functions/$fn/index.ts"
+          done
+
+      - name: Parse and resolve Edge Function module graphs
+        run: |
+          set -e
+          deno check supabase/functions/mcp/index.ts
+          deno check supabase/functions/mcp-v3/index.ts
+          deno check supabase/functions/mcp-options/index.ts
+          deno check supabase/functions/mcp-htsc/index.ts
+
+      - name: Scan repository for literal credentials
+        run: |
+          set -e
+
+          if grep -RInE \
+            '(github_pat_[A-Za-z0-9_]{20,}|ht_[A-Za-z0-9]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{30,})' \
+            supabase README.md docs scripts .github 2>/dev/null
+          then
+            echo "Possible literal credential detected"
+            exit 2
+          else
+            echo "No literal credential pattern detected"
+          fi

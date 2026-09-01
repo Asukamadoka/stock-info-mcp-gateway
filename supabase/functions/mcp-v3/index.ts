@@ -4,6 +4,12 @@ import {
   parseCnQuoteTimestamp,
   runFallback,
 } from "./lib/source-result.ts";
+import {
+  fetchItickDepth,
+} from "./lib/level2.ts";
+import {
+  getLevel2OrderBook,
+} from "./lib/level2-service.ts";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare:false, max:1 });
 const VERSION = "3.0.0-staging";
@@ -194,12 +200,72 @@ async function quoteResilient(a:any){
   return wrap(result);
 }
 
+async function l2OrderBook(a:any){
+  const symbol=
+    normCode(
+      a.code,
+      a.market,
+    );
+
+  if(symbol.startsWith("bj")){
+    return wrap({
+      source:"itick-depth",
+      source_family:"itick",
+
+      source_timestamp:null,
+      fetched_at:
+        new Date().toISOString(),
+
+      stale:null,
+      confidence:0,
+
+      data_kind:"raw",
+
+      status:"unavailable",
+
+      data:null,
+
+      error:
+        "Level-2 provider currently supports SH/SZ only; BJ is unavailable",
+    });
+  }
+
+  const market=
+    symbol.startsWith("sh")
+      ?"SH"
+      :"SZ";
+
+  const result=
+    await getLevel2OrderBook({
+      code:
+        symbol.slice(2),
+
+      market,
+
+      tokenLoader:
+        ()=>secret(
+          "itick_api_token"
+        ),
+
+      depthFetcher:
+        ({token,code,market})=>
+          fetchItickDepth({
+            token,
+            code,
+            region:market,
+          }),
+    });
+
+  return wrap(result);
+}
+
 const LOCAL=[
 {name:"source_status",description:"Gateway source/auth/deployment status",inputSchema:{type:"object",additionalProperties:false}},
 {name:"a_quote_tencent",description:"Tencent A-share realtime quote",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
 {name:"a_kline_tencent",description:"Tencent m1/m5/m15/m30/m60 K-line",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]},period:{type:"string",enum:["m1","m5","m15","m30","m60"]},count:{type:"integer",minimum:1,maximum:320}},required:["code"],additionalProperties:false}},
 {name:"a_quote_consensus",description:"Cross-check Tencent realtime quote against HiThink official structured snapshot",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
 {name:"a_quote_resilient",description:"A-share realtime quote with Tencent primary and HiThink fallback. Returns source, freshness, confidence and provider-attempt metadata.",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
+{name:"l2_orderbook",description:"A-share SH/SZ multi-level order book via optional iTick Level-2 provider. Returns visible depth, imbalance, spread and microprice. Missing/expired/quota-limited credentials are reported explicitly and are never replaced by fake Level-2 data.",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz"]}},required:["code"],additionalProperties:false}},
 {name:"tushare_list_tools",description:"List all TuShare MCP tools without lossy name normalization",inputSchema:{type:"object",additionalProperties:false}},
 {name:"tushare_call",description:"Call any TuShare MCP tool by its original tool name",inputSchema:{type:"object",properties:{tool_name:{type:"string"},arguments:{type:"object"}},required:["tool_name"],additionalProperties:false}},
 {name:"a_stock_data_capabilities",description:"Inspect integrated simonlin1212/a-stock-data full-skill capability catalog",inputSchema:{type:"object",additionalProperties:false}}
@@ -228,7 +294,7 @@ Deno.serve(async(req:Request)=>{
   }
   if(m==="tools/call"){
     const n=String(p?.name||""),a=p?.arguments||{};
-    if(n==="source_status")return jres(id,await sourceStatus()); if(n==="a_quote_tencent")return jres(id,await tencentQuote(a)); if(n==="a_kline_tencent")return jres(id,await tencentKline(a)); if(n==="a_quote_consensus")return jres(id,await quoteConsensus(a)); if(n==="a_quote_resilient")return jres(id,await quoteResilient(a)); if(n==="tushare_list_tools")return jres(id,wrap(await tushareTools())); if(n==="tushare_call")return jres(id,await callUpstream(tushare,"tools/call",{name:a.tool_name,arguments:a.arguments||{}})); if(n==="a_stock_data_capabilities")return jres(id,await aStockCatalog());
+    if(n==="source_status")return jres(id,await sourceStatus()); if(n==="a_quote_tencent")return jres(id,await tencentQuote(a)); if(n==="a_kline_tencent")return jres(id,await tencentKline(a)); if(n==="a_quote_consensus")return jres(id,await quoteConsensus(a)); if(n==="a_quote_resilient")return jres(id,await quoteResilient(a)); if(n==="l2_orderbook")return jres(id,await l2OrderBook(a)); if(n==="tushare_list_tools")return jres(id,wrap(await tushareTools())); if(n==="tushare_call")return jres(id,await callUpstream(tushare,"tools/call",{name:a.tool_name,arguments:a.arguments||{}})); if(n==="a_stock_data_capabilities")return jres(id,await aStockCatalog());
     const hi=await findHi(n); if(hi)return jres(id,await callUpstream(hi.up,"tools/call",{name:hi.name,arguments:a}));
     return jres(id,await callUpstream(jin10,"tools/call",p));
   }

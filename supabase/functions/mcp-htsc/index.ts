@@ -1,8 +1,17 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import postgres from "npm:postgres@3.4.7";
+import { SecretCache } from "./secret-cache.ts";
 const sql=postgres(Deno.env.get("SUPABASE_DB_URL")!,{prepare:false,max:1});
-const VERSION="1.0.0",PROTOCOL="2025-11-25",BASE="https://ai.zhangle.com/edge/entry/gate";
-let cache=new Map<string,string>();async function sec(n:string){if(cache.has(n))return cache.get(n)!;const r=await sql`select decrypted_secret from vault.decrypted_secrets where name=${n} limit 1`;const v=String(r?.[0]?.decrypted_secret||"");if(!v)throw new Error(`missing secret ${n}`);cache.set(n,v);return v}
+const VERSION="1.1.0",PROTOCOL="2025-11-25",BASE="https://ai.zhangle.com/edge/entry/gate";
+async function loadSecret(n:string){
+  const r=await sql`select decrypted_secret from vault.decrypted_secrets where name=${n} limit 1`;
+  const v=String(r?.[0]?.decrypted_secret||"");
+  if(!v)throw new Error(`missing secret ${n}`);
+  return v;
+}
+
+const secretCache=new SecretCache(loadSecret,60_000);
+const sec=(n:string)=>secretCache.get(n);
 function jr(id:any,result:any,status=200){return new Response(JSON.stringify({jsonrpc:"2.0",id,result}),{status,headers:{"content-type":"application/json; charset=utf-8"}})}
 function je(id:any,code:number,message:string,data?:any,status=200){return new Response(JSON.stringify({jsonrpc:"2.0",id:id??null,error:{code,message,...(data===undefined?{}:{data})}}),{status,headers:{"content-type":"application/json; charset=utf-8"}})}
 function wrap(data:any){return{content:[{type:"text",text:JSON.stringify(data)}],structuredContent:{data,status:200,message:""}}}

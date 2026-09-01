@@ -52,7 +52,34 @@ async function findHi(prefixed:string){for(const up of HI){if(prefixed.startsWit
 async function tushareTools(){return await callUpstream(tushare,"tools/list",{})}
 async function aStockSkill(){const r=await fetch("https://raw.githubusercontent.com/simonlin1212/a-stock-data/main/SKILL.md",{headers:{"User-Agent":"stock-info-mcp-gateway"}});if(!r.ok)throw new Error(`a-stock-data SKILL HTTP ${r.status}`);return await r.text()}
 async function aStockCatalog(){const txt=await aStockSkill();const heads=[...txt.matchAll(/^###?\s+(.+)$/gm)].map(m=>m[1]).slice(0,200);return wrap({source:"simonlin1212/a-stock-data",integration_mode:"skill-resource+native-adapters",headings:heads,skill_bytes:new TextEncoder().encode(txt).length,worker_status:"python worker pending GitHub integration permission",note:"All skill capabilities are retained as source specification; HTTP-native endpoints are being promoted into first-class tools, Python/TCP endpoints require isolated worker."})}
-async function sourceStatus(){return wrap({gateway:{name:"stock-info-mcp-gateway",version:VERSION},active:["jin10","tencent","hithink-a-share","hithink-index","hithink-fund","hithink-meta","tushare","a-stock-data-skill"],secrets:["jin10_bearer_token","hithink_finance_api_key","tushare_token"],production_function:"mcp v2 remains untouched",staging_function:"mcp-v3",github_sync:"blocked by GitHub App contents-write permission",principle:"independent upstream domains count as independent votes; wrappers over the same source do not"})}
+async function sourceStatus(){
+  return wrap({
+    gateway:{
+      name:"stock-info-mcp-gateway",
+      version:VERSION,
+      production_router:"mcp",
+      core_component:"mcp-v3",
+      source_of_truth:"github"
+    },
+    active:[
+      "jin10",
+      "tencent",
+      "hithink-a-share",
+      "hithink-index",
+      "hithink-fund",
+      "hithink-meta",
+      "tushare",
+      "a-stock-data-skill",
+      "sina-options",
+      "htsc"
+    ],
+    auth:{
+      mode:"vault-backed bearer",
+      current_client_secret:"jin10_bearer_token"
+    },
+    principle:"independent upstream domains count as independent votes; wrappers over the same source do not"
+  })
+}
 async function quoteConsensus(a:any){const tq=await tencentQuote(a);const code=normCode(a.code,a.market);const thscode=`${code.slice(2)}.${code.startsWith("sh")?"SH":code.startsWith("sz")?"SZ":"BJ"}`;let hi:any=null,hiErr:any=null;try{hi=await callUpstream(hiA,"tools/call",{name:"get_a_share_prices_snapshot",arguments:{thscodes:thscode}})}catch(e){hiErr=String(e)}return wrap({ticker:thscode,tencent:tq.structuredContent.data,hithink:hi?.structuredContent??hi?.content??hi,error:hiErr,validation:"Compare timestamps and price fields; do not average discrepant sources blindly."})}
 
 const LOCAL=[

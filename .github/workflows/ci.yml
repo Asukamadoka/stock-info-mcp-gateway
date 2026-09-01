@@ -1,0 +1,24 @@
+name: Edge Function Compile Check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deno-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Type-check Edge Functions
+        run: |
+          deno check supabase/functions/mcp/index.ts
+          deno check supabase/functions/mcp-v3/index.ts
+          deno check supabase/functions/mcp-options/index.ts
+          deno check supabase/functions/mcp-htsc/index.ts

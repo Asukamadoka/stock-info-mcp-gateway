@@ -29,9 +29,10 @@ import {
 import {
   parseTencentQuotePayload,
 } from "./lib/tencent.ts";
+import { runQmtGatewayTool } from "./lib/qmt-provider.ts";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare:false, max:1 });
-const VERSION = "3.1.0";
+const VERSION = "3.2.0";
 const CLIENT_PROTOCOL = "2025-11-25";
 
 type Upstream = { id:string; url:()=>Promise<string>; headers:()=>Promise<Record<string,string>>; protocol:string; prefix?:string };
@@ -113,6 +114,9 @@ async function tencentQuote(a:any){
 
 async function tencentKline(a:any){const symbol=normCode(a.code,a.market),period=String(a.period||"m5"),count=Math.max(1,Math.min(Number(a.count||100),320));if(!["m1","m5","m15","m30","m60"].includes(period))throw new Error("bad period");const r=await fetch(`https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=${symbol},${period},,${count}`,{headers:{Referer:"https://gu.qq.com/","User-Agent":"Mozilla/5.0"}});const j=await r.json();const rows=j?.data?.[symbol]?.[period];if(!Array.isArray(rows))throw new Error("missing Tencent kline rows");const klines=rows.map((x:any[])=>({time:x?.[0]??null,open:x?.[1]??null,close:x?.[2]??null,high:x?.[3]??null,low:x?.[4]??null,volume_lots:x?.[5]??null,turnover_basis_points:x?.[7]??null,estimated_amount:x?.[5]&&x?.[1]&&x?.[2]?Number(x[5])*100*((Number(x[1])+Number(x[2]))/2):null}));return wrap({source:"tencent",symbol,period,count:klines.length,klines,note:"estimated_amount is estimated; field[7] is turnover basis points"})}
 function wrap(data:any){return{content:[{type:"text",text:JSON.stringify(data)}],structuredContent:{data,status:200,message:""}}}
+async function optionalSecret(name:string){try{const r=await sql`select decrypted_secret from vault.decrypted_secrets where name=${name} limit 1`;const v=String(r?.[0]?.decrypted_secret||"").trim();return v||null}catch{return null}}
+async function qmtConfig(){const url=await optionalSecret("qmt_mcp_url");if(!url)return null;const token=await optionalSecret("qmt_mcp_token");return {url,...(token?{token}:{})}}
+async function qmtGateway(name:"qmt_status"|"qmt_quote"|"qmt_option_chain",args:any){return wrap(await runQmtGatewayTool(name,args,{loadConfig:qmtConfig}))}
 
 async function hiTools(){const out:any[]=[];for(const up of HI){const r=await callUpstream(up,"tools/list",{});for(const t of r?.tools||[])out.push({...t,name:`${up.prefix}${t.name}`,description:`[${up.id}] ${t.description||t.title||t.name}`})}return out}
 async function findHi(prefixed:string){for(const up of HI){if(prefixed.startsWith(up.prefix!))return{up,name:prefixed.slice(up.prefix!.length)}}return null}
@@ -764,6 +768,9 @@ async function candidateScore(
 }
 
 const LOCAL=[
+{name:"qmt_status",description:"Read-only QMT/qmt-mcp capability status. Returns explicit unavailable when the Windows bridge is not configured or usable.",inputSchema:{type:"object",additionalProperties:false}},
+{name:"qmt_quote",description:"Read-only QMT current quote snapshot via qmt-mcp qmt_xtdata_snapshot. Freshness remains unknown unless a reliable source timestamp is available; no fake realtime claim.",inputSchema:{type:"object",properties:{codes:{type:"array",items:{type:"string"},minItems:1,maxItems:50},fields:{type:"array",items:{type:"string"}},cache_policy:{type:"string",enum:["prefer","cache_only","live"]}},required:["codes"],additionalProperties:false}},
+{name:"qmt_option_chain",description:"Read-only QMT option code chain via qmt-mcp qmt_xtdata_option_chain. Broker entitlement/readiness failures are explicit and never replaced with fabricated contracts.",inputSchema:{type:"object",properties:{underlying:{type:"string"},trade_date:{type:"string"}},required:["underlying"],additionalProperties:false}},
 {name:"source_status",description:"Gateway source/auth/deployment status",inputSchema:{type:"object",additionalProperties:false}},
 {name:"a_quote_tencent",description:"Tencent A-share realtime quote",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]}},required:["code"],additionalProperties:false}},
 {name:"a_kline_tencent",description:"Tencent m1/m5/m15/m30/m60 K-line",inputSchema:{type:"object",properties:{code:{type:"string"},market:{type:"string",enum:["sh","sz","bj"]},period:{type:"string",enum:["m1","m5","m15","m30","m60"]},count:{type:"integer",minimum:1,maximum:320}},required:["code"],additionalProperties:false}},
@@ -801,7 +808,7 @@ Deno.serve(async(req:Request)=>{
   }
   if(m==="tools/call"){
     const n=String(p?.name||""),a=p?.arguments||{};
-    if(n==="source_status")return jres(id,await sourceStatus()); if(n==="a_quote_tencent")return jres(id,await tencentQuote(a)); if(n==="a_kline_tencent")return jres(id,await tencentKline(a)); if(n==="a_quote_consensus")return jres(id,await quoteConsensus(a)); if(n==="a_quote_resilient")return jres(id,await quoteResilient(a)); if(n==="l2_orderbook")return jres(id,await l2OrderBook(a)); if(n==="a_intraday_signals")return jres(id,await intradaySignals(a)); if(n==="fund_flow_consensus")return jres(id,await fundFlowConsensus(a)); if(n==="candidate_score")return jres(id,await candidateScore(a)); if(n==="tushare_list_tools")return jres(id,wrap(await tushareTools())); if(n==="tushare_call")return jres(id,await callUpstream(tushare,"tools/call",{name:a.tool_name,arguments:a.arguments||{}})); if(n==="a_stock_data_capabilities")return jres(id,await aStockCatalog());
+    if(n==="qmt_status")return jres(id,await qmtGateway("qmt_status",a)); if(n==="qmt_quote")return jres(id,await qmtGateway("qmt_quote",a)); if(n==="qmt_option_chain")return jres(id,await qmtGateway("qmt_option_chain",a)); if(n==="source_status")return jres(id,await sourceStatus()); if(n==="a_quote_tencent")return jres(id,await tencentQuote(a)); if(n==="a_kline_tencent")return jres(id,await tencentKline(a)); if(n==="a_quote_consensus")return jres(id,await quoteConsensus(a)); if(n==="a_quote_resilient")return jres(id,await quoteResilient(a)); if(n==="l2_orderbook")return jres(id,await l2OrderBook(a)); if(n==="a_intraday_signals")return jres(id,await intradaySignals(a)); if(n==="fund_flow_consensus")return jres(id,await fundFlowConsensus(a)); if(n==="candidate_score")return jres(id,await candidateScore(a)); if(n==="tushare_list_tools")return jres(id,wrap(await tushareTools())); if(n==="tushare_call")return jres(id,await callUpstream(tushare,"tools/call",{name:a.tool_name,arguments:a.arguments||{}})); if(n==="a_stock_data_capabilities")return jres(id,await aStockCatalog());
     const hi=await findHi(n); if(hi)return jres(id,await callUpstream(hi.up,"tools/call",{name:hi.name,arguments:a}));
     return jres(id,await callUpstream(jin10,"tools/call",p));
   }

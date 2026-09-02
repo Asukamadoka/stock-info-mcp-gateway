@@ -123,6 +123,54 @@ function clean(
     );
 }
 
+
+function sessionKey(
+  value: string,
+): string | null {
+  const digits =
+    value.replace(/\D/g, "");
+
+  if (digits.length < 8) {
+    return null;
+  }
+
+  return digits.slice(0, 8);
+}
+
+function latestSession(
+  input: IntradayBar[],
+): IntradayBar[] {
+  const bars = clean(input);
+
+  const keys = bars
+    .map((bar) =>
+      sessionKey(bar.time)
+    )
+    .filter(
+      (x): x is string =>
+        x !== null,
+    );
+
+  if (!keys.length) {
+    return bars;
+  }
+
+  const latest =
+    keys.reduce(
+      (best, current) =>
+        current > best
+          ? current
+          : best,
+    );
+
+  return bars.filter(
+    (bar) =>
+      sessionKey(bar.time) ===
+      latest,
+  );
+}
+
+
 export function computeBarVwap(
   input: IntradayBar[],
 ): BarVwap {
@@ -209,15 +257,55 @@ export function computeRelativeStrength(
   benchmarkInput: IntradayBar[],
   bars: number,
 ): RelativeStrength | null {
+  const targetBars =
+    latestSession(targetInput);
+
+  const benchmarkBars =
+    latestSession(benchmarkInput);
+
+  const targetByTime =
+    new Map(
+      targetBars.map(
+        (bar) => [bar.time, bar],
+      ),
+    );
+
+  const benchmarkByTime =
+    new Map(
+      benchmarkBars.map(
+        (bar) => [bar.time, bar],
+      ),
+    );
+
+  const commonTimes =
+    [...targetByTime.keys()]
+      .filter(
+        (time) =>
+          benchmarkByTime.has(time),
+      )
+      .sort();
+
+  const alignedTarget =
+    commonTimes.map(
+      (time) =>
+        targetByTime.get(time)!,
+    );
+
+  const alignedBenchmark =
+    commonTimes.map(
+      (time) =>
+        benchmarkByTime.get(time)!,
+    );
+
   const target =
     windowReturn(
-      targetInput,
+      alignedTarget,
       bars,
     );
 
   const benchmark =
     windowReturn(
-      benchmarkInput,
+      alignedBenchmark,
       bars,
     );
 
@@ -427,10 +515,10 @@ export function computeIntradaySignals(
   benchmarkInput: IntradayBar[],
 ): IntradaySignals {
   const target =
-    clean(targetInput);
+    latestSession(targetInput);
 
   const benchmark =
-    clean(benchmarkInput);
+    latestSession(benchmarkInput);
 
   const vwap =
     computeBarVwap(target);

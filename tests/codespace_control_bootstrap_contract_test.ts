@@ -27,11 +27,19 @@ Deno.test("codespace bootstrap guarantees Deno before starting the control serve
   assert(denoGate >= 0 && serverStart > denoGate);
 });
 
+Deno.test("quick tunnel must be publicly healthy before registry POST", async () => {
+  const bootstrap = await Deno.readTextFile("scripts/codespace-control-bootstrap.sh");
+  const tunnelHealth = bootstrap.indexOf("${TUNNEL}/${CAP}/health");
+  const registerPost = bootstrap.indexOf("-X POST \"${REGISTER_URL}\"");
+  assert(tunnelHealth >= 0);
+  assert(registerPost > tunnelHealth);
+});
+
 Deno.test("fixed-action server exposes no generic exec route", async () => {
   const source = await Deno.readTextFile("scripts/codespace-control-server.py");
   for (const route of ["/release", "/apply-patch", "/cleanup-known-artifact", "/commit-pr"]) assert(source.includes(route));
-  assert(!source.includes('"/exec"'));
-  assert(!source.includes('"/shell"'));
+  assert(!source.includes("\"/exec\""));
+  assert(!source.includes("\"/shell\""));
   assert(!source.includes("ht_submit_order"));
   assert(!source.includes("ht_cancel_order"));
   assert(!source.includes("ht_cancel_all_pending_orders"));

@@ -83,6 +83,15 @@ done
 printf '%s' "${TUNNEL}" > "${STATE_DIR}/tunnel-url"
 chmod 600 "${STATE_DIR}/tunnel-url"
 
+PUBLIC_HEALTH="${TUNNEL}/${CAP}/health"
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 5 "${PUBLIC_HEALTH}" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+curl -fsS --max-time 5 "${PUBLIC_HEALTH}" >/dev/null
+
 BODY="$(python3 - "${TUNNEL}" "${CAP}" <<'PY'
 import json, sys
 print(json.dumps({"host": sys.argv[1], "capability": sys.argv[2], "ttl_minutes": 360}))

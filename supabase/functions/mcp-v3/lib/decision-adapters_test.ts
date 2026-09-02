@@ -5,6 +5,7 @@ import {
 
 import {
   buildFlowObservations,
+  hasCriticalFlowChipData,
   technicalScoreFromIntraday,
 } from "./decision-adapters.ts";
 
@@ -251,5 +252,57 @@ Deno.test("unavailable Level-2 is omitted rather than replaced by fake depth", (
     observations[0]
       .sourceFamily,
     "tencent",
+  );
+});
+
+
+Deno.test("proxy observations do not count as critical flow-chip data", () => {
+  const observations:any[] = [
+    {
+      source:"tencent-tail-proxy",
+      sourceFamily:"tencent",
+      kind:"price_volume",
+      signal:0.8,
+      confidence:0.9,
+      stale:false,
+      dataKind:"estimate",
+    },
+    {
+      source:"itick-depth",
+      sourceFamily:"itick",
+      kind:"orderbook",
+      signal:0.6,
+      confidence:0.8,
+      stale:false,
+      dataKind:"derived",
+    },
+  ];
+
+  assertEquals(
+    hasCriticalFlowChipData(
+      observations,
+    ),
+    false,
+  );
+});
+
+Deno.test("fresh verified net-flow counts as critical flow-chip data", () => {
+  const observations:any[] = [
+    {
+      source:"verified-flow",
+      sourceFamily:"verified",
+      kind:"net_flow",
+      signal:0.5,
+      confidence:0.9,
+      stale:false,
+      dataKind:"raw",
+    },
+  ];
+
+  assertEquals(
+    hasCriticalFlowChipData(
+      observations,
+    ),
+    true,
   );
 });

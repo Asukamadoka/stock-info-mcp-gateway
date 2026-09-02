@@ -1,4 +1,5 @@
 import {
+  assert,
   assertAlmostEquals,
   assertEquals,
 } from "jsr:@std/assert@1";
@@ -151,4 +152,91 @@ Deno.test("intraday signals expose VWAP state, RS and tail snapshots", () => {
   assertEquals(r.tail.since_1400 !== null, true);
   assertEquals(r.tail.since_1430 !== null, true);
   assertEquals(r.completeness, 1);
+});
+
+Deno.test("intraday signals never mix bars from previous trading session", () => {
+  const previous: IntradayBar[] = [
+    { time:"202609011430", open:100, high:101, low:99, close:100, volume:1000 },
+    { time:"202609011435", open:100, high:101, low:99, close:100, volume:1000 },
+    { time:"202609011440", open:100, high:101, low:99, close:100, volume:1000 },
+    { time:"202609011445", open:100, high:101, low:99, close:100, volume:1000 },
+    { time:"202609011450", open:100, high:101, low:99, close:100, volume:1000 },
+    { time:"202609011455", open:100, high:101, low:99, close:100, volume:1000 },
+  ];
+
+  const current: IntradayBar[] = [
+    { time:"202609021400", open:10, high:10.2, low:9.9, close:10.1, volume:100 },
+    { time:"202609021405", open:10.1, high:10.3, low:10, close:10.2, volume:100 },
+    { time:"202609021410", open:10.2, high:10.4, low:10.1, close:10.3, volume:100 },
+    { time:"202609021415", open:10.3, high:10.5, low:10.2, close:10.4, volume:100 },
+    { time:"202609021420", open:10.4, high:10.6, low:10.3, close:10.5, volume:100 },
+    { time:"202609021425", open:10.5, high:10.7, low:10.4, close:10.6, volume:100 },
+    { time:"202609021430", open:10.6, high:10.8, low:10.5, close:10.7, volume:100 },
+  ];
+
+  const r = computeIntradaySignals(
+    [...previous, ...current],
+    [...previous, ...current],
+  );
+
+  assertEquals(
+    r.tail.since_1400?.first_time,
+    "202609021400",
+  );
+
+  assertEquals(
+    r.tail.since_1430?.first_time,
+    "202609021430",
+  );
+
+  // A cross-day VWAP would be pulled toward 100.
+  assert(r.vwap.value! < 20);
+});
+
+Deno.test("early session RS does not borrow previous-day bars", () => {
+  const previous: IntradayBar[] = [
+    { time:"202609011430", open:10, high:10, low:10, close:10, volume:100 },
+    { time:"202609011435", open:10, high:10, low:10, close:10, volume:100 },
+    { time:"202609011440", open:10, high:10, low:10, close:10, volume:100 },
+    { time:"202609011445", open:10, high:10, low:10, close:10, volume:100 },
+    { time:"202609011450", open:10, high:10, low:10, close:10, volume:100 },
+    { time:"202609011455", open:10, high:10, low:10, close:10, volume:100 },
+  ];
+
+  const current: IntradayBar[] = [
+    { time:"202609020930", open:11, high:11.1, low:10.9, close:11, volume:100 },
+    { time:"202609020935", open:11, high:11.1, low:10.9, close:11, volume:100 },
+  ];
+
+  const r = computeIntradaySignals(
+    [...previous, ...current],
+    [...previous, ...current],
+  );
+
+  assertEquals(r.rs_15m, null);
+  assertEquals(r.rs_30m, null);
+});
+
+Deno.test("RS requires matched target and benchmark timestamps", () => {
+  const target: IntradayBar[] = [
+    { time:"202609020930", open:10, high:10.1, low:9.9, close:10.0, volume:100 },
+    { time:"202609020935", open:10, high:10.2, low:9.9, close:10.1, volume:100 },
+    { time:"202609020940", open:10.1, high:10.3, low:10, close:10.2, volume:100 },
+  ];
+
+  const benchmark: IntradayBar[] = [
+    { time:"202609020925", open:20, high:20.1, low:19.9, close:20.0, volume:100 },
+    { time:"202609020935", open:20, high:20.1, low:19.9, close:20.0, volume:100 },
+    { time:"202609020940", open:20, high:20.1, low:19.9, close:20.0, volume:100 },
+  ];
+
+  const r =
+    computeIntradaySignals(
+      target,
+      benchmark,
+    );
+
+  // Only 09:35 and 09:40 are common.
+  // Two common 5m bars are insufficient for RS15.
+  assertEquals(r.rs_15m, null);
 });

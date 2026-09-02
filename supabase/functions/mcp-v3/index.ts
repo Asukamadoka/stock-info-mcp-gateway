@@ -23,8 +23,12 @@ import {
 } from "./lib/candidate-score.ts";
 import {
   buildFlowObservations,
+  hasCriticalFlowChipData,
   technicalScoreFromIntraday,
 } from "./lib/decision-adapters.ts";
+import {
+  parseTencentQuotePayload,
+} from "./lib/tencent.ts";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare:false, max:1 });
 const VERSION = "3.1.0";
@@ -69,53 +73,38 @@ const HI=[hiA,hiI,hiF,hiM];
 
 function normCode(code:string,market?:string){let s=String(code).trim().toLowerCase();if(/^sh\d{6}$/.test(s)||/^sz\d{6}$/.test(s)||/^bj\d{6}$/.test(s))return s;if(/^\d{6}\.(sh|sz|bj)$/.test(s)){const [c,m]=s.split(".");return m+c}if(!/^\d{6}$/.test(s))throw new Error("code must be six digits or exchange-qualified");if(market)return market+s;if(/^(5|6|68)/.test(s))return"sh"+s;if(/^(0|1|2|3)/.test(s))return"sz"+s;if(/^(4|8|92)/.test(s))return"bj"+s;throw new Error("cannot infer market")}
 async function tencentQuoteData(a:any){
-  const symbol=normCode(a.code,a.market);
+  const symbol=
+    normCode(
+      a.code,
+      a.market,
+    );
 
   const r=await fetch(
     `https://qt.gtimg.cn/q=${symbol}`,
     {
       headers:{
         Referer:"https://gu.qq.com/",
-        "User-Agent":"Mozilla/5.0"
-      }
-    }
+        "User-Agent":"Mozilla/5.0",
+      },
+    },
   );
 
-  if(!r.ok) throw new Error(`Tencent HTTP ${r.status}`);
+  if(!r.ok){
+    throw new Error(
+      `Tencent HTTP ${r.status}`,
+    );
+  }
 
-  const txt=new TextDecoder("gbk").decode(await r.arrayBuffer());
-  const m=txt.match(/="([\\s\\S]*?)"/);
+  const text=
+    new TextDecoder("gbk")
+      .decode(
+        await r.arrayBuffer(),
+      );
 
-  if(!m) throw new Error("bad Tencent quote payload");
-
-  const f=m[1].split("~");
-
-  return {
-    source:"tencent",
+  return parseTencentQuotePayload(
+    text,
     symbol,
-    code:f[2]||symbol.slice(2),
-    name:f[1]||null,
-
-    price:f[3]||null,
-    prev_close:f[4]||null,
-    open:f[5]||null,
-    volume:f[6]||null,
-
-    bid:f[9]||null,
-    ask:f[19]||null,
-
-    time:f[30]||null,
-
-    change:f[31]||null,
-    change_percent:f[32]||null,
-
-    high:f[33]||null,
-    low:f[34]||null,
-
-    turnover_amount:f[37]||null,
-    turnover_rate:f[38]||null,
-    pe_ttm:f[39]||null
-  };
+  );
 }
 
 async function tencentQuote(a:any){
@@ -696,9 +685,9 @@ async function candidateScore(
           .critical1430Available,
 
       flowChipDataAvailable:
-        ctx.flow
-          .signal_1_to_1 !==
-        null,
+        hasCriticalFlowChipData(
+          ctx.observations,
+        ),
 
       vetoes:{
         unjustifiedValuation:

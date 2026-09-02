@@ -217,6 +217,23 @@ function average(
   )/usable.length;
 }
 
+export function hasCriticalFlowChipData(
+  observations: FlowObservation[],
+): boolean {
+  return observations.some(
+    (x) =>
+      (
+        x.kind === "net_flow" ||
+        x.kind === "chip"
+      ) &&
+      x.signal !== null &&
+      Number.isFinite(x.signal) &&
+      Number.isFinite(x.confidence) &&
+      x.confidence > 0 &&
+      x.stale !== true,
+  );
+}
+
 export function buildFlowObservations(
   args:{
     signals:IntradaySignals;

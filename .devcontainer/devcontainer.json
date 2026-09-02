@@ -1,4 +1,7 @@
 {
   "name": "stock-info-mcp-gateway",
+  "features": {
+    "ghcr.io/devcontainers-community/features/deno:1": {}
+  },
   "postStartCommand": "bash scripts/codespace-control-bootstrap.sh"
 }

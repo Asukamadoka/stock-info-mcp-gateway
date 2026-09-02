@@ -7,9 +7,18 @@ PORT="${CODESPACE_CONTROL_PORT:-8765}"
 REGISTER_URL="https://aneonwkxfhgqywtczmvc.supabase.co/functions/v1/codespace-control-register"
 SERVER="${REPO}/scripts/codespace-control-server.py"
 LOG_DIR="${STATE_DIR}/logs"
+DENO_INSTALL="${DENO_INSTALL:-${HOME}/.deno}"
+export DENO_INSTALL
+export PATH="${DENO_INSTALL}/bin:${HOME}/.local/bin:${PATH}"
 
 mkdir -p "${STATE_DIR}" "${LOG_DIR}"
 chmod 700 "${STATE_DIR}"
+
+if ! command -v deno >/dev/null 2>&1; then
+  curl -fsSL https://deno.land/install.sh | sh -s -- -y
+fi
+
+deno --version >/dev/null
 
 stop_pid_file() {
   local f="$1"
@@ -57,7 +66,6 @@ if ! command -v cloudflared >/dev/null 2>&1; then
   mkdir -p "${HOME}/.local/bin"
   curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" -o "${HOME}/.local/bin/cloudflared"
   chmod +x "${HOME}/.local/bin/cloudflared"
-  export PATH="${HOME}/.local/bin:${PATH}"
 fi
 
 : > "${LOG_DIR}/cloudflared.log"

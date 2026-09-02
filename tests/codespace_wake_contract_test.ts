@@ -15,6 +15,15 @@ Deno.test("wake function is fixed to this repository and not a generic GitHub pr
   assert(!source.includes('body.codespace'));
 });
 
+Deno.test("wake targets only the dedicated automation Codespace and is lifecycle-idempotent", async () => {
+  const source = await Deno.readTextFile("supabase/functions/codespace-wake/index.ts");
+  assert(source.includes('const DISPLAY_NAME = "stock-info-mcp-gateway-automation"'));
+  assert(source.includes('display_name'));
+  assert(source.includes('repository?.full_name'));
+  assert(source.includes('res.status === 409'));
+  assert(source.includes('already_running'));
+});
+
 Deno.test("wake persistence tables are service-only and throttled", async () => {
   const sql = await Deno.readTextFile("supabase/migrations/20260903013000_codespace_wake.sql");
   assert(sql.includes("codespace_wake_events"));

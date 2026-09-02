@@ -11,6 +11,16 @@ Deno.test("codespace control bootstrap is restart-safe and self-registering", as
   assert(!bootstrap.includes("jin10_bearer_token"));
 });
 
+Deno.test("codespace bootstrap guarantees Deno before starting the control server", async () => {
+  const bootstrap = await Deno.readTextFile("scripts/codespace-control-bootstrap.sh");
+  assert(bootstrap.includes("command -v deno"));
+  assert(bootstrap.includes("DENO_INSTALL"));
+  assert(bootstrap.includes("deno --version"));
+  const denoGate = bootstrap.indexOf("command -v deno");
+  const serverStart = bootstrap.indexOf("nohup python3");
+  assert(denoGate >= 0 && serverStart > denoGate);
+});
+
 Deno.test("fixed-action server exposes no generic exec route", async () => {
   const source = await Deno.readTextFile("scripts/codespace-control-server.py");
   for (const route of ["/release", "/apply-patch", "/cleanup-known-artifact", "/commit-pr"]) assert(source.includes(route));

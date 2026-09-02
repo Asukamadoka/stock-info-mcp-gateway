@@ -38,7 +38,7 @@ Deno.test("QMT option chain maps exact upstream arguments", async()=>{
 
 Deno.test("QMT permission errors remain explicit and never look like neutral data", async()=>{
   const m=await loadProvider();
-  const r=await m.runQmtGatewayTool("qmt_quote",{codes:["600000.SH"]},{loadConfig:async()=>({url:"https://qmt.example/mcp",token:"x"}),callTool:async()=>{throw new m.QmtMcpError("not_authorized","scope missing",{scope:"market_data"});}});
+  const r=await m.runQmtGatewayTool("qmt_quote",{codes:["600000.SH"]},{loadConfig:async()=>({url:"https://qmt.example/mcp",token:"x"}),callTool:async()=>{throw new m.QmtMcpError("not_authorized","scope missing",{details:{scope:"market_data"}});}});
   assertEquals(r.status,"permission"); assertEquals(r.confidence,0); assertEquals(r.data,null);
 });
 

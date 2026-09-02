@@ -11,6 +11,12 @@ Deno.test("codespace control bootstrap is restart-safe and self-registering", as
   assert(!bootstrap.includes("jin10_bearer_token"));
 });
 
+Deno.test("automation Codespace bakes Deno into the devcontainer", async () => {
+  const devcontainer = JSON.parse(await Deno.readTextFile(".devcontainer/devcontainer.json"));
+  assert(devcontainer.features);
+  assert(devcontainer.features["ghcr.io/devcontainers-community/features/deno:1"]);
+});
+
 Deno.test("codespace bootstrap guarantees Deno before starting the control server", async () => {
   const bootstrap = await Deno.readTextFile("scripts/codespace-control-bootstrap.sh");
   assert(bootstrap.includes("command -v deno"));

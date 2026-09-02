@@ -19,6 +19,12 @@ Production-backed multi-source A-share MCP gateway.
 - `supabase/functions/mcp-options` — ETF option contract/quote/Greeks adapter
 - `supabase/functions/mcp-htsc` — AI涨乐/华泰 adapter
 
+## Documentation
+
+- [Architecture and mobile development path](docs/MOBILE_BUILD.md)
+- [References and provider roadmap](docs/REFERENCES.md)
+- [Historical production bootstrap provenance](docs/PRODUCTION_SNAPSHOT.md)
+
 Credentials are stored in Supabase Vault only and must never be committed.
 
 ## Safety boundary

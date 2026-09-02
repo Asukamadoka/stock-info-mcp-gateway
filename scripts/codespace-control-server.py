@@ -47,6 +47,7 @@ def health():
         "ok":True,
         "service":"stock-info-mcp-gateway-fixed-control",
         "repo":str(REPO),
+        "codespace_name":os.environ.get("CODESPACE_NAME"),
         "branch":run(["git","branch","--show-current"])["stdout"].strip(),
         "head":run(["git","rev-parse","HEAD"])["stdout"].strip(),
         "dirty":bool(status_text().strip()),

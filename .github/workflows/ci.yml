@@ -26,7 +26,7 @@ jobs:
       - name: Strict Edge Function type checks
         run: |
           set -e
-          for fn in mcp mcp-v3 mcp-options mcp-htsc codespace-control-register; do deno check "supabase/functions/$fn/index.ts"; done
+          for fn in mcp mcp-v3 mcp-options mcp-htsc codespace-control-register codespace-wake; do deno check "supabase/functions/$fn/index.ts"; done
       - name: Run gateway tests
         run: |
           set -e

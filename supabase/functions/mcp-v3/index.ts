@@ -32,7 +32,7 @@ import {
 import { runQmtGatewayTool } from "./lib/qmt-provider.ts";
 
 const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare:false, max:1 });
-const VERSION = "3.2.0";
+const VERSION = "3.1.0";
 const CLIENT_PROTOCOL = "2025-11-25";
 
 type Upstream = { id:string; url:()=>Promise<string>; headers:()=>Promise<Record<string,string>>; protocol:string; prefix?:string };

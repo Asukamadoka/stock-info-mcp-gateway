@@ -36,7 +36,7 @@ async function listManyRaw(
     const chunk=symbols.slice(i,i+chunkSize);
 
     const r=await fetch(
-      `https://hq.sinajs.cn/list=${encodeURIComponent(chunk.join(","))}`,
+      `https://hq.sinajs.cn/list=${chunk.join(",")}`,
       {headers:HDR},
     );
 

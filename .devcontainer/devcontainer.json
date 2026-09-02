@@ -1,0 +1,4 @@
+{
+  "name": "stock-info-mcp-gateway",
+  "postStartCommand": "bash scripts/codespace-control-bootstrap.sh"
+}

@@ -19,14 +19,14 @@ jobs:
       - name: Reject generated snapshot markers
         run: |
           set -e
-          for fn in mcp mcp-v3 mcp-options mcp-htsc; do
+          for fn in mcp mcp-v3 mcp-options mcp-htsc mcp-handoff; do
             file="supabase/functions/$fn/index.ts"
             if grep -En 'reverse-synced ESZip runtime snapshot|@ts-nocheck' "$file"; then exit 1; fi
           done
       - name: Strict Edge Function type checks
         run: |
           set -e
-          for fn in mcp mcp-v3 mcp-options mcp-htsc codespace-control-register codespace-wake; do deno check "supabase/functions/$fn/index.ts"; done
+          for fn in mcp mcp-v3 mcp-options mcp-htsc mcp-handoff codespace-control-register codespace-wake; do deno check "supabase/functions/$fn/index.ts"; done
       - name: Run gateway tests
         run: |
           set -e
@@ -48,6 +48,17 @@ jobs:
           test -f ".devcontainer/devcontainer.json"
           test -f "scripts/codespace-control-bootstrap.sh"
           test -f "scripts/codespace-control-server.py"
+      - name: Verify decision handoff contract
+        run: |
+          set -e
+          migration="supabase/migrations/20260904012000_decision_handoffs.sql"
+          test -f "$migration"
+          grep -q 'decision_handoffs' "$migration"
+          grep -q 'enable row level security' "$migration"
+          grep -q 'revoke all on table public.decision_handoffs from anon, authenticated' "$migration"
+          grep -q 'handoff_put' supabase/functions/mcp-handoff/index.ts
+          grep -q 'handoff_get' supabase/functions/mcp-handoff/index.ts
+          grep -q 'handoff_list_day' supabase/functions/mcp-handoff/index.ts
       - name: Scan repository for literal credentials
         run: |
           set -e

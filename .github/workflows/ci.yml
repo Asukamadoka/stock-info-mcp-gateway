@@ -72,10 +72,11 @@ jobs:
             grep -q "$tool" supabase/functions/mcp-outcomes/index.ts
           done
           grep -q 'violatesLookahead' supabase/functions/mcp-outcomes/index.ts
+          grep -q 'allSettled' supabase/functions/mcp/index.ts
       - name: Reject trading capability in the outcome module
         run: |
           set -e
-          if grep -InE '(submit_order|cancel_order|place_order|ht_submit|transfer_funds)' supabase/functions/mcp-outcomes/; then
+          if grep -rInE '(submit_order|cancel_order|place_order|ht_submit|transfer_funds)' supabase/functions/mcp-outcomes/; then
             echo "outcome module must remain read-and-settle only" >&2
             exit 1
           fi

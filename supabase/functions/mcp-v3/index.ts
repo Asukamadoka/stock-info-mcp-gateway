@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import postgres from "npm:postgres@3.4.7";
+import { declaredNames, ListingCache, mergeToolLists, type ProviderListing, routeTool, timeoutSignal, type UpstreamSpec } from "./lib/upstream.ts";
 import {
   parseCnBarTimestamp,
   parseCnQuoteTimestamp,
@@ -35,7 +36,9 @@ const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { prepare:false, max:1 })
 const VERSION = "3.1.0";
 const CLIENT_PROTOCOL = "2025-11-25";
 
-type Upstream = { id:string; url:()=>Promise<string>; headers:()=>Promise<Record<string,string>>; protocol:string; prefix?:string };
+type Upstream = { id:string; url:()=>Promise<string>; headers:()=>Promise<Record<string,string>>; protocol:string; prefix?:string; timeoutMs?:number };
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 8000;
+const LISTING_TTL_MS = 300_000;
 
 let secretCache = new Map<string,{v:string,t:number}>();
 async function secret(name:string){
@@ -49,7 +52,7 @@ function jerr(id:unknown,code:number,message:string,data?:unknown,status=200){re
 function parseSse(text:string){for(const line of text.split(/\r?\n/)){if(!line.startsWith("data:"))continue;const p=line.slice(5).trim();if(!p||p==="[DONE]")continue;try{return JSON.parse(p)}catch{}}throw new Error("unparseable SSE")}
 async function rpc(up:Upstream,body:any,sessionId?:string){
   const h=await up.headers(); h["content-type"]="application/json"; h["accept"]="application/json, text/event-stream"; h["mcp-protocol-version"]=up.protocol; if(sessionId)h["mcp-session-id"]=sessionId;
-  const res=await fetch(await up.url(),{method:"POST",headers:h,body:JSON.stringify(body)}); const txt=await res.text();
+  const res=await fetch(await up.url(),{method:"POST",headers:h,body:JSON.stringify(body),signal:timeoutSignal(up.timeoutMs??DEFAULT_UPSTREAM_TIMEOUT_MS)}); const txt=await res.text();
   if(!res.ok) throw new Error(`${up.id} HTTP ${res.status}: ${txt.slice(0,600)}`);
   const ct=res.headers.get("content-type")||""; const payload=ct.includes("text/event-stream")?parseSse(txt):(txt?JSON.parse(txt):null);
   return {payload,sessionId:res.headers.get("mcp-session-id")||sessionId};
@@ -70,7 +73,6 @@ const hiI=hithink("hithink-index","a-share-index","hithink_index__");
 const hiF=hithink("hithink-fund","fund","hithink_fund__");
 const hiM=hithink("hithink-meta","meta","hithink_meta__");
 const tushare:Upstream={id:"tushare",protocol:"2025-11-25",url:async()=>`https://api.tushare.pro/mcp/?token=${encodeURIComponent(await secret("tushare_token"))}`,headers:async()=>({})};
-const HI=[hiA,hiI,hiF,hiM];
 
 function normCode(code:string,market?:string){let s=String(code).trim().toLowerCase();if(/^sh\d{6}$/.test(s)||/^sz\d{6}$/.test(s)||/^bj\d{6}$/.test(s))return s;if(/^\d{6}\.(sh|sz|bj)$/.test(s)){const [c,m]=s.split(".");return m+c}if(!/^\d{6}$/.test(s))throw new Error("code must be six digits or exchange-qualified");if(market)return market+s;if(/^(5|6|68)/.test(s))return"sh"+s;if(/^(0|1|2|3)/.test(s))return"sz"+s;if(/^(4|8|92)/.test(s))return"bj"+s;throw new Error("cannot infer market")}
 async function tencentQuoteData(a:any){
@@ -118,8 +120,33 @@ async function optionalSecret(name:string){try{const r=await sql`select decrypte
 async function qmtConfig(){const url=await optionalSecret("qmt_mcp_url");if(!url)return null;const token=await optionalSecret("qmt_mcp_token");return {url,...(token?{token}:{})}}
 async function qmtGateway(name:"qmt_status"|"qmt_quote"|"qmt_option_chain",args:any){return wrap(await runQmtGatewayTool(name,args,{loadConfig:qmtConfig}))}
 
-async function hiTools(){const out:any[]=[];for(const up of HI){const r=await callUpstream(up,"tools/list",{});for(const t of r?.tools||[])out.push({...t,name:`${up.prefix}${t.name}`,description:`[${up.id}] ${t.description||t.title||t.name}`})}return out}
-async function findHi(prefixed:string){for(const up of HI){if(prefixed.startsWith(up.prefix!))return{up,name:prefixed.slice(up.prefix!.length)}}return null}
+const PROVIDERS:Upstream[]=[jin10,hiA,hiI,hiF,hiM];
+const SPECS:UpstreamSpec[]=PROVIDERS.map(u=>({id:u.id,prefix:u.prefix??"",protocol:u.protocol,timeoutMs:u.timeoutMs??DEFAULT_UPSTREAM_TIMEOUT_MS}));
+const listingCache=new ListingCache(LISTING_TTL_MS);
+function byId(pid:string){const u=PROVIDERS.find(x=>x.id===pid);if(!u)throw new Error(`unknown provider ${pid}`);return u}
+
+/**
+ * List one provider's tools. Never throws: a provider that is down, slow or
+ * malformed is reported as degraded, not propagated. Successful listings are
+ * cached so a tools/list does not pay three round trips per provider each time.
+ */
+async function listProvider(up:Upstream):Promise<ProviderListing>{
+  const hit=listingCache.get(up.id); if(hit) return hit;
+  try{
+    const r=await callUpstream(up,"tools/list",{});
+    const pfx=up.prefix??"";
+    const tools=(r?.tools||[]).map((t:any)=>({...t,name:`${pfx}${t.name}`,description:`[${up.id}] ${t.description||t.title||t.name}`}));
+    const listing:ProviderListing={providerId:up.id,ok:true,tools};
+    listingCache.set(listing);
+    return listing;
+  }catch(e){
+    return {providerId:up.id,ok:false,tools:[],error:e instanceof Error?e.message:String(e)};
+  }
+}
+async function listAllProviders():Promise<ProviderListing[]>{
+  const settled=await Promise.allSettled(PROVIDERS.map(listProvider));
+  return settled.map((r,i)=>r.status==="fulfilled"?r.value:{providerId:PROVIDERS[i].id,ok:false,tools:[],error:String(r.reason)});
+}
 async function tushareTools(){return await callUpstream(tushare,"tools/list",{})}
 async function aStockSkill(){const r=await fetch("https://raw.githubusercontent.com/simonlin1212/a-stock-data/main/SKILL.md",{headers:{"User-Agent":"stock-info-mcp-gateway"}});if(!r.ok)throw new Error(`a-stock-data SKILL HTTP ${r.status}`);return await r.text()}
 async function aStockCatalog(){const txt=await aStockSkill();const heads=[...txt.matchAll(/^###?\s+(.+)$/gm)].map(m=>m[1]).slice(0,200);return wrap({source:"simonlin1212/a-stock-data",integration_mode:"skill-resource+native-adapters",headings:heads,skill_bytes:new TextEncoder().encode(txt).length,worker_status:"python worker pending GitHub integration permission",note:"All skill capabilities are retained as source specification; HTTP-native endpoints are being promoted into first-class tools, Python/TCP endpoints require isolated worker."})}
@@ -795,22 +822,26 @@ Deno.serve(async(req:Request)=>{
   if(m==="initialize")return jres(id,{protocolVersion:CLIENT_PROTOCOL,capabilities:{tools:{},resources:{}},serverInfo:{name:"stock-info-mcp-gateway",version:VERSION}});
   if(m==="notifications/initialized")return new Response(null,{status:202}); if(m==="ping")return jres(id,{});
   if(m==="tools/list"){
-    const j=await callUpstream(jin10,"tools/list",{}); const hi=await hiTools();
-    return jres(id,{tools:[...LOCAL,...hi,...(j?.tools||[])]});
+    const listings=await listAllProviders();
+    const merged=mergeToolLists(LOCAL,listings);
+    return jres(id,{tools:merged.tools,...(merged.degraded.length?{_meta:{degraded_providers:merged.degraded}}:{})});
   }
   if(m==="resources/list"){
-    let jr:any={resources:[]}; try{jr=await callUpstream(jin10,"resources/list",{})}catch{}
+    let jr:any={resources:[]}; try{jr=await callUpstream(jin10,"resources/list",{})}catch{/* provider unavailable; local resources still served */}
     return jres(id,{resources:[{uri:"a-stock-data://skill",name:"a-stock-data SKILL.md",mimeType:"text/markdown",description:"Live full capability specification from simonlin1212/a-stock-data"},...(jr?.resources||[])]});
   }
   if(m==="resources/read"){
     if(p?.uri==="a-stock-data://skill")return jres(id,{contents:[{uri:p.uri,mimeType:"text/markdown",text:await aStockSkill()}]});
-    return jres(id,await callUpstream(jin10,"resources/read",p));
+    if(typeof p?.uri==="string"&&p.uri.startsWith("jin10://")) return jres(id,await callUpstream(jin10,"resources/read",p));
+    return jerr(id,-32602,`unknown resource uri: ${String(p?.uri??"")}`);
   }
   if(m==="tools/call"){
     const n=String(p?.name||""),a=p?.arguments||{};
     if(n==="qmt_status")return jres(id,await qmtGateway("qmt_status",a)); if(n==="qmt_quote")return jres(id,await qmtGateway("qmt_quote",a)); if(n==="qmt_option_chain")return jres(id,await qmtGateway("qmt_option_chain",a)); if(n==="source_status")return jres(id,await sourceStatus()); if(n==="a_quote_tencent")return jres(id,await tencentQuote(a)); if(n==="a_kline_tencent")return jres(id,await tencentKline(a)); if(n==="a_quote_consensus")return jres(id,await quoteConsensus(a)); if(n==="a_quote_resilient")return jres(id,await quoteResilient(a)); if(n==="l2_orderbook")return jres(id,await l2OrderBook(a)); if(n==="a_intraday_signals")return jres(id,await intradaySignals(a)); if(n==="fund_flow_consensus")return jres(id,await fundFlowConsensus(a)); if(n==="candidate_score")return jres(id,await candidateScore(a)); if(n==="tushare_list_tools")return jres(id,wrap(await tushareTools())); if(n==="tushare_call")return jres(id,await callUpstream(tushare,"tools/call",{name:a.tool_name,arguments:a.arguments||{}})); if(n==="a_stock_data_capabilities")return jres(id,await aStockCatalog());
-    const hi=await findHi(n); if(hi)return jres(id,await callUpstream(hi.up,"tools/call",{name:hi.name,arguments:a}));
-    return jres(id,await callUpstream(jin10,"tools/call",p));
+    const declared=declaredNames(await listAllProviders());
+    const route=routeTool(n,new Set(LOCAL.map((t:any)=>t.name)),SPECS,declared);
+    if(route.kind==="upstream")return jres(id,await callUpstream(byId(route.providerId),"tools/call",{name:route.name,arguments:a}));
+    return jerr(id,-32601,`unknown tool ${n}`);
   }
   return jerr(id,-32601,`Method not found: ${String(m)}`);
  }catch(e){console.error(e);return jerr(null,-32603,"Internal error",e instanceof Error?e.message:String(e),500)}

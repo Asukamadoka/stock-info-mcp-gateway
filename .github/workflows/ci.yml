@@ -73,6 +73,21 @@ jobs:
           done
           grep -q 'violatesLookahead' supabase/functions/mcp-outcomes/index.ts
           grep -q 'allSettled' supabase/functions/mcp/index.ts
+      - name: Verify provider neutrality
+        run: |
+          set -e
+          grep -q 'const PROVIDERS:Upstream\[\]' supabase/functions/mcp-v3/index.ts
+          grep -q 'timeoutSignal(' supabase/functions/mcp-v3/index.ts
+          grep -q 'listAllProviders' supabase/functions/mcp-v3/index.ts
+          if grep -n 'return jres(id,await callUpstream(jin10,"tools/call"' supabase/functions/mcp-v3/index.ts; then
+            echo "tools/call must not fall through to a provider" >&2; exit 1
+          fi
+          for dead in findHi hiTools; do
+            if grep -qw "$dead" supabase/functions/mcp-v3/index.ts; then
+              echo "dead helper $dead still present" >&2; exit 1
+            fi
+          done
+          echo "provider neutrality holds"
       - name: Reject trading capability in the outcome module
         run: |
           set -e

@@ -1,0 +1,108 @@
+{
+  "id": "RP-2026-09-05-01",
+  "created_at": "2026-09-05T00:00:00+08:00",
+  "reason": "Edge Function 清理前的基线。删除约 36 个一次性自动化函数前的完整生产状态快照。",
+  "author": "claude",
+
+  "git": {
+    "repo": "Asukamadoka/stock-info-mcp-gateway",
+    "branch": "main",
+    "head": "bc62340a9a89710a2c3b354a0bfb744e1247ef09",
+    "head_subject": "Merge pull request #20 from Asukamadoka/automation/decision-handoff-store",
+    "tag": "rp/RP-2026-09-05-01"
+  },
+
+  "supabase": {
+    "project_ref": "aneonwkxfhgqywtczmvc",
+    "region": "ap-southeast-1",
+    "postgres": "17.6.1.166",
+    "extensions": ["pg_net"],
+    "pg_cron": false
+  },
+
+  "migrations": [
+    "20260901080842_enable_pg_net_for_gateway_smoke_tests",
+    "20260901174956_option_snapshots",
+    "20260902023559_create_codespace_bridge_jobs",
+    "20260902152226_add_codespace_control_registry",
+    "20260902170351_secure_codespace_control_registry",
+    "20260902175519_secure_codespace_control_registry",
+    "20260902175606_codespace_wake_events",
+    "20260903030947_option_snapshot_rls",
+    "20260904034218_decision_handoffs"
+  ],
+
+  "tables": [
+    { "name": "public.option_chain_snapshots", "rls": true, "rows": 8 },
+    { "name": "public.option_contract_snapshots", "rls": true, "rows": 226 },
+    { "name": "public.decision_handoffs", "rls": true, "rows": 0 },
+    { "name": "public.codespace_bridge_jobs", "rls": true, "rows": 1 },
+    { "name": "public.codespace_control_registry", "rls": true, "rows": 10 },
+    { "name": "public.codespace_wake_events", "rls": true, "rows": 3 },
+    { "name": "private.codespace_bootstrap_files", "rls": false, "rows": 10,
+      "note": "RLS 未启用。位于 private schema，若未列入 PostgREST exposed schemas 则 anon key 不可达；仍应作为纵深防御启用。" }
+  ],
+
+  "production_surface": {
+    "entry": "https://aneonwkxfhgqywtczmvc.supabase.co/functions/v1/mcp",
+    "router": "前缀路由，无业务逻辑",
+    "routes": {
+      "option_*": "mcp-options",
+      "ht_*": "mcp-htsc",
+      "handoff_*": "mcp-handoff",
+      "*": "mcp-v3"
+    },
+    "note": "移动端定时任务仅经由此入口。任何不在这四个模块路径上的函数，删除后不影响移动端工作链。"
+  },
+
+  "edge_functions": {
+    "in_repo": [
+      "mcp", "mcp-v3", "mcp-options", "mcp-htsc", "mcp-handoff",
+      "codespace-control-register", "codespace-wake"
+    ],
+    "control_plane_authenticated": ["codespace-bridge", "github-sync", "htsc-inspect"],
+    "retained_pending_rebuild": [
+      "mobile-core-smoke", "mobile-prod-smoke", "mobile-options-smoke",
+      "mobile-options-diagnostic", "cmship-live-once"
+    ],
+    "scheduled_for_deletion": [
+      "merge-pr-5", "merge-pr-9-once", "merge-pr-11-once", "merge-pr-12-once",
+      "merge-pr-13-once", "merge-pr-14-once", "merge-pr-15-once",
+      "merge-pr-16-once", "merge-pr-17-once", "qmt-windows-bridge-merge-once",
+      "option-rls-merge-once", "open-wake-pr-once", "open-deno-bootstrap-pr-once",
+      "open-qmt-client-pr-once", "open-qmt-gateway-pr-once",
+      "create-codespace-persistence-pr-once", "qmt-windows-bridge-pr-once",
+      "ensure-automation-codespace-once", "recreate-automation-codespace-once",
+      "stop-stock-gateway-codespace-once", "stop-dedicated-automation-once",
+      "resolve-stock-gateway-codespace-once", "update-quick-tunnel-readiness-once",
+      "update-wake-health-once", "fix-mobile-build-once", "qmt-gateway-red-once",
+      "qmt-gateway-green-once", "fix-qmt-gateway-test-once",
+      "revert-qmt-version-bump-once", "codespace-rebuild-main-once",
+      "bootstrap-codespace-persistence", "bootstrap-codespace-persistence-once",
+      "option-rls-branch-once", "option-rls-clean-worker-once",
+      "qmt-windows-bridge-red-once", "qmt-windows-bridge-green-once",
+      "codespace-status-stock-info", "sina-options-probe", "codespace-patch",
+      "ten-stock-live-once", "github-sync"
+    ],
+    "source_archive": "docs/archive/retired-edge-functions.md"
+  },
+
+  "secrets": {
+    "names_only": ["jin10_bearer_token", "github_pat_stock_info_gateway"],
+    "note": "只记名称，永不记值。两者均待轮换；jin10_bearer_token 当前同时承担数据面与控制面鉴权，需拆分。"
+  },
+
+  "verification": {
+    "ci": "Canonical Source Validation",
+    "tests": "96 Deno.test",
+    "smoke": "无。mobile-*-smoke 已被退役为 410 空壳，生产验收闸门当前为空。"
+  },
+
+  "rollback": [
+    "1. 代码：git checkout rp/RP-2026-09-05-01，或将 main 重置到 bc62340。",
+    "2. 已删除的 Edge Function：Supabase 不保留已删函数历史，需从 docs/archive/retired-edge-functions.md 的模板重建。这些都是一次性动作脚本，重建价值极低。",
+    "3. migration：本回归点未新增 migration，无需回退。",
+    "4. 验证：GET /functions/v1/mcp 应返回 200 且 x-stock-info-router: core-v3+options+htsc+handoff；tools/list 应合并四个模块的工具表。",
+    "5. 移动端：确认定时任务仍能通过 /functions/v1/mcp 正常调用。"
+  ]
+}

@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import postgres from "npm:postgres@3.4.7";
+import { authenticateClient, logAuth } from "../_shared/auth.ts";
 import { declaredNames, ListingCache, mergeToolLists, type ProviderListing, routeTool, timeoutSignal, type UpstreamSpec } from "./lib/upstream.ts";
 import {
   parseCnBarTimestamp,
@@ -173,7 +174,7 @@ async function sourceStatus(){
     ],
     auth:{
       mode:"vault-backed bearer",
-      current_client_secret:"jin10_bearer_token"
+      client_auth:{accepted:["gateway_client_token","jin10_bearer_token"],preferred:"gateway_client_token",legacy_window_open:true,note:"jin10_bearer_token is accepted for inbound auth only during the migration window; it is the outbound credential for mcp.jin10.com and must stop serving as the gateway door key."}
     },
     principle:"independent upstream domains count as independent votes; wrappers over the same source do not"
   })
@@ -812,7 +813,7 @@ const LOCAL=[
 {name:"a_stock_data_capabilities",description:"Inspect integrated simonlin1212/a-stock-data full-skill capability catalog",inputSchema:{type:"object",additionalProperties:false}}
 ];
 
-async function clientAuth(req:Request){const a=req.headers.get("authorization")||"";return a===`Bearer ${await secret("jin10_bearer_token")}`}
+async function clientAuth(req:Request){const r=await authenticateClient(req,secret);logAuth("mcp-v3",r);return r.ok}
 Deno.serve(async(req:Request)=>{
  if(req.method==="GET")return new Response(JSON.stringify({name:"stock-info-mcp-gateway",version:VERSION,status:"ready",source_of_truth:"github"}),{headers:{"content-type":"application/json"}});
  if(req.method!=="POST")return new Response("Method Not Allowed",{status:405});

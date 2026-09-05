@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import postgres from "npm:postgres@3.4.7";
+import { authenticateClient, logAuth } from "../_shared/auth.ts";
 import {
   MIN_SAMPLE,
   scorecard,
@@ -23,7 +24,9 @@ async function secret(name: string) {
   return v;
 }
 async function auth(req: Request) {
-  return (req.headers.get("authorization") || "") === `Bearer ${await secret("jin10_bearer_token")}`;
+  const r = await authenticateClient(req, secret);
+  logAuth("mcp-outcomes", r);
+  return r.ok;
 }
 function jres(id: unknown, result: unknown, status = 200) {
   return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {

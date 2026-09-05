@@ -19,18 +19,18 @@ jobs:
       - name: Reject generated snapshot markers
         run: |
           set -e
-          for fn in mcp mcp-v3 mcp-options mcp-htsc mcp-handoff; do
+          for fn in mcp mcp-v3 mcp-options mcp-htsc mcp-handoff mcp-outcomes; do
             file="supabase/functions/$fn/index.ts"
             if grep -En 'reverse-synced ESZip runtime snapshot|@ts-nocheck' "$file"; then exit 1; fi
           done
       - name: Strict Edge Function type checks
         run: |
           set -e
-          for fn in mcp mcp-v3 mcp-options mcp-htsc mcp-handoff codespace-control-register codespace-wake; do deno check "supabase/functions/$fn/index.ts"; done
+          for fn in mcp mcp-v3 mcp-options mcp-htsc mcp-handoff mcp-outcomes codespace-control-register codespace-wake; do deno check "supabase/functions/$fn/index.ts"; done
       - name: Run gateway tests
         run: |
           set -e
-          deno test --allow-read=. supabase/functions/mcp-v3/lib supabase/functions/mcp-options/lib supabase/functions/mcp-htsc tests
+          deno test --allow-read=. supabase/functions/mcp-v3/lib supabase/functions/mcp-options/lib supabase/functions/mcp-outcomes/lib supabase/functions/mcp-htsc tests
       - name: Verify option snapshot migration contract
         run: |
           set -e
@@ -59,6 +59,27 @@ jobs:
           grep -q 'handoff_put' supabase/functions/mcp-handoff/index.ts
           grep -q 'handoff_get' supabase/functions/mcp-handoff/index.ts
           grep -q 'handoff_list_day' supabase/functions/mcp-handoff/index.ts
+      - name: Verify decision outcome contract
+        run: |
+          set -e
+          migration="supabase/migrations/20260905010000_decision_outcomes.sql"
+          test -f "$migration"
+          grep -q 'decision_outcomes' "$migration"
+          grep -q 'enable row level security' "$migration"
+          grep -q 'revoke all on table public.decision_outcomes from anon, authenticated' "$migration"
+          grep -q 'decision_outcomes_settled_has_return' "$migration"
+          for tool in outcome_record outcome_get outcome_scorecard; do
+            grep -q "$tool" supabase/functions/mcp-outcomes/index.ts
+          done
+          grep -q 'violatesLookahead' supabase/functions/mcp-outcomes/index.ts
+      - name: Reject trading capability in the outcome module
+        run: |
+          set -e
+          if grep -InE '(submit_order|cancel_order|place_order|ht_submit|transfer_funds)' supabase/functions/mcp-outcomes/; then
+            echo "outcome module must remain read-and-settle only" >&2
+            exit 1
+          fi
+          echo "no trading capability detected"
       - name: Scan repository for literal credentials
         run: |
           set -e

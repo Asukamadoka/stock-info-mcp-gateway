@@ -1,11 +1,11 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import postgres from "npm:postgres@3.4.7";
+import { authenticateClient, logAuth } from "../_shared/auth.ts";
 import {
   computePutPressure,
   type OptionContract,
 } from "./lib/put-pressure.ts";
 import {
-import { authenticateClient, logAuth } from "../_shared/auth.ts";
   previousOpenInterestFromRows,
   toContractSnapshotRows,
 } from "./lib/snapshot.ts";

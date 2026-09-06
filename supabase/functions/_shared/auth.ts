@@ -1,36 +1,21 @@
 // Inbound authentication for the gateway.
 //
-// The gateway used to authenticate callers against `jin10_bearer_token` — the
-// same string it sends outbound to mcp.jin10.com on every data request. That
-// meant the gateway's own door key travelled to a third party, a leak of a
-// read-only data credential granted full tool access, and the vendor rotating
-// their token would have taken production auth down with it.
+// This used to compare the caller's header against `jin10_bearer_token` — the
+// same string the gateway sends outbound to mcp.jin10.com on every data
+// request. The gateway's own door key therefore travelled to a third party as
+// a matter of routine, a leaked read-only data credential granted full tool
+// access, and the vendor rotating their token would have taken production auth
+// down with it.
 //
-// This module moves inbound auth onto its own secret while keeping the old one
-// accepted, so clients can be cut over without an outage.
+// Inbound auth is now its own credential and nothing else is accepted. There is
+// deliberately no compatibility window: a window is a second code path that
+// must be watched, reasoned about and eventually removed, and every one of
+// those steps is a chance to leave it in place forever.
 
 export type SecretReader = (name: string) => Promise<string>;
 
-/** The credential clients should present from now on. */
+/** The only credential that authenticates a caller. */
 export const CLIENT_TOKEN = "gateway_client_token";
-
-/**
- * Accepted during the migration window only.
- *
- * Removing this is the final step of the cut-over and must not happen before
- * the logs show no caller still presenting it. Every accepted request emits an
- * `auth` log line naming the credential used, so "no traffic on the old value"
- * is an observation rather than an assumption.
- */
-export const LEGACY_CLIENT_TOKEN = "jin10_bearer_token";
-
-export const DEFAULT_ACCEPTED: readonly string[] = [CLIENT_TOKEN, LEGACY_CLIENT_TOKEN];
-
-export interface AuthResult {
-  ok: boolean;
-  /** Which credential matched. Null when unauthenticated. */
-  source: string | null;
-}
 
 /** Length-safe comparison, so a wrong token cannot be narrowed byte by byte. */
 export function constantTimeEqual(a: string, b: string): boolean {
@@ -51,42 +36,22 @@ export function bearerOf(req: Request): string | null {
 }
 
 /**
- * Authenticate an inbound request against the accepted credentials, in order.
- *
- * A secret that does not exist yet is skipped rather than fatal: the new
- * credential can be created after this code ships, and the gateway keeps
- * working throughout.
+ * Authenticate an inbound request. Returns false rather than throwing when the
+ * secret is missing or unreadable, so a Vault problem is a rejection, never an
+ * accidental pass.
  */
 export async function authenticateClient(
   req: Request,
   readSecret: SecretReader,
-  accepted: readonly string[] = DEFAULT_ACCEPTED,
-): Promise<AuthResult> {
+  secretName: string = CLIENT_TOKEN,
+): Promise<boolean> {
   const presented = bearerOf(req);
-  if (!presented) return { ok: false, source: null };
-
-  for (const name of accepted) {
-    let value = "";
-    try {
-      value = await readSecret(name);
-    } catch {
-      continue; // secret absent or unreadable; try the next
-    }
-    if (value && constantTimeEqual(presented, value)) return { ok: true, source: name };
+  if (!presented) return false;
+  let expected = "";
+  try {
+    expected = await readSecret(secretName);
+  } catch {
+    return false;
   }
-  return { ok: false, source: null };
-}
-
-/**
- * One structured line per authenticated request, so the cut-over can be
- * observed. Query for source="jin10_bearer_token" to see who has not moved.
- */
-export function logAuth(module: string, result: AuthResult): void {
-  if (!result.ok) return;
-  console.log(JSON.stringify({
-    event: "auth",
-    module,
-    source: result.source,
-    legacy: result.source === LEGACY_CLIENT_TOKEN,
-  }));
+  return expected.length > 0 && constantTimeEqual(presented, expected);
 }

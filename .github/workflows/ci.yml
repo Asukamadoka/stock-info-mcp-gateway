@@ -30,7 +30,7 @@ jobs:
       - name: Run gateway tests
         run: |
           set -e
-          deno test --allow-read=. supabase/functions/mcp-v3/lib supabase/functions/mcp-options/lib supabase/functions/mcp-outcomes/lib supabase/functions/mcp-htsc tests
+          deno test --allow-read=. supabase/functions/_shared supabase/functions/mcp-v3/lib supabase/functions/mcp-options/lib supabase/functions/mcp-outcomes/lib supabase/functions/mcp-htsc tests
       - name: Verify option snapshot migration contract
         run: |
           set -e
@@ -96,6 +96,24 @@ jobs:
             exit 1
           fi
           echo "no trading capability detected"
+      - name: Verify credential separation
+        run: |
+          set -e
+          test -f supabase/functions/_shared/auth.ts
+          for fn in mcp-v3 mcp-options mcp-htsc mcp-handoff mcp-outcomes; do
+            grep -q 'authenticateClient' "supabase/functions/$fn/index.ts" \
+              || { echo "$fn does not use the shared authenticator" >&2; exit 1; }
+          done
+          if grep -n 'LEGACY\|DEFAULT_ACCEPTED' supabase/functions/_shared/auth.ts; then
+            echo "no compatibility window is permitted" >&2; exit 1
+          fi
+          if grep -rn 'jin10_bearer_token' supabase/functions/ \
+             | grep -v '_shared/auth' \
+             | grep -v 'mcp.jin10.com' \
+             | grep -v 'client_auth:' ; then
+            echo "jin10_bearer_token used outside its outbound role" >&2; exit 1
+          fi
+          echo "inbound auth uses its own credential; jin10 is outbound only"
       - name: Scan repository for literal credentials
         run: |
           set -e

@@ -1,0 +1,61 @@
+{
+  "id": "RP-2026-09-08-01",
+  "created_at": "2026-09-08T00:00:00+08:00",
+  "reason": "首次生产部署前的基线。部署 provider 中立化、超时容错、凭证分离、mcp-outcomes 与 decision_outcomes migration。",
+  "author": "claude",
+
+  "git": {
+    "repo": "Asukamadoka/big-whale",
+    "predecessor": "Asukamadoka/stock-info-mcp-gateway",
+    "branch": "main",
+    "note": "两仓库内容一致；big-whale 额外含 foundations 提交"
+  },
+
+  "supabase": {
+    "project_ref": "aneonwkxfhgqywtczmvc",
+    "plan": "free",
+    "region": "ap-southeast-1"
+  },
+
+  "deployed_before_this_change": {
+    "mcp": 9,
+    "mcp-v3": 6,
+    "mcp-options": 6,
+    "mcp-htsc": 4,
+    "mcp-handoff": 3,
+    "mcp-outcomes": "未部署"
+  },
+
+  "migrations_applied_before": [
+    "20260901080842_enable_pg_net_for_gateway_smoke_tests",
+    "20260901174956_option_snapshots",
+    "20260902023559_create_codespace_bridge_jobs",
+    "20260902152226_add_codespace_control_registry",
+    "20260902170351_secure_codespace_control_registry",
+    "20260902175519_secure_codespace_control_registry",
+    "20260902175606_codespace_wake_events",
+    "20260903030947_option_snapshot_rls",
+    "20260904034218_decision_handoffs"
+  ],
+
+  "secrets": {
+    "names_only": ["jin10_bearer_token", "gateway_client_token", "github_pat_stock_info_gateway", "hithink_finance_api_key", "tushare_token"],
+    "note": "只记名称，永不记值。gateway_client_token 于 2026-09-05 在 Postgres 内部生成。"
+  },
+
+  "breaking_change": {
+    "what": "部署后 jin10_bearer_token 立即失去入站鉴权能力",
+    "impact": "所有现有客户端与定时任务将收到 401，直到改用 gateway_client_token",
+    "intentional": true,
+    "rationale": "用户明确要求不设兼容窗口，定时任务将重构"
+  },
+
+  "rollback": [
+    "1. 代码：git checkout rp/RP-2026-09-08-01（两仓库同一内容）。",
+    "2. Edge Function：用回归点记录的旧 version 重新部署 mcp / mcp-v3 / mcp-options / mcp-htsc / mcp-handoff。Supabase 保留历史版本，可在 Dashboard 回滚。",
+    "3. mcp-outcomes：新增函数，回滚即删除或留置不用。",
+    "4. migration：drop table if exists public.decision_outcomes; 新增表，无上游外键。",
+    "5. 凭证：回滚代码即恢复 jin10_bearer_token 的入站鉴权，无需改 Vault。",
+    "6. 验证：GET /functions/v1/mcp 返回 200；tools/list 返回合并后的工具表。"
+  ]
+}
